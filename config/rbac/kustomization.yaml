@@ -16,9 +16,6 @@ resources:
 - metrics_auth_role.yaml
 - metrics_auth_role_binding.yaml
 - metrics_reader_role.yaml
-# role.yaml (the manager ClusterRole) is now controller-gen-generated from the
-# DatabaseService controller's RBAC markers (internal/controller/
-# databaseservice/databaseservice.go). role_binding.yaml binds it to the
-# manager's ServiceAccount. Added together, as planned in phase 1.
+# role.yaml is generated from the DatabaseService controller's RBAC markers; role_binding.yaml grants it to the manager ServiceAccount.
 - role.yaml
 - role_binding.yaml

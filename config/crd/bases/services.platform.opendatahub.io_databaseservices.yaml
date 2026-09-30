@@ -15,11 +15,11 @@ spec:
   scope: Cluster
   versions:
   - additionalPrinterColumns:
-    - description: Ready
+    - description: Whether the DatabaseService is ready
       jsonPath: .status.conditions[?(@.type=="Ready")].status
       name: Ready
       type: string
-    - description: Reason
+    - description: Reason the DatabaseService is not ready
       jsonPath: .status.conditions[?(@.type=="Ready")].reason
       name: Reason
       type: string
@@ -50,11 +50,8 @@ spec:
           metadata:
             type: object
           spec:
-            description: |-
-              DatabaseServiceSpec defines the desired state of DatabaseService. No
-              custom fields: this CR's only job is to let the ODH Operator enable/gate
-              on this module like any other -- it does not deploy a separate
-              third-party operand the way other modules' Module CRs do.
+            description: DatabaseServiceSpec is empty because DatabaseService has
+              no configurable desired state.
             type: object
           status:
             description: DatabaseServiceStatus defines the observed state of DatabaseService.

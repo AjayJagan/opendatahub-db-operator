@@ -14,26 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package envtest holds this module's envtest-backed reconciler suite: it
-// runs the real manager (pkg/manager.New, the same entry point
-// cmd/operator/operator.go uses) against envtest's fake apiserver with the
-// DatabaseService CRD installed from config/crd/bases, and proves the
-// two-action reconciler (UpgradeIfNeeded + reportStatus) drives a
-// default-db-operator singleton CR to Ready.
-//
-// This is deliberately a separate package from test/integration, which (per
-// its own doc comment) is reserved for tests that need a real, connected
-// cluster -- envtest's fake apiserver would not exercise what those tests
-// exist to catch (real RBAC enforcement, a real etcd, etc.), and conversely
-// this suite doesn't need any of that, so it also doesn't need a live
-// cluster or kubeconfig. Keeping it out of test/integration also keeps it
-// out of `go test ./test/integration/...`, which test-integration-run uses
-// against a real cluster -- an envtest suite living there would otherwise
-// get swept into that invocation.
-//
-// Requires KUBEBUILDER_ASSETS to point at a directory containing etcd and
-// kube-apiserver binaries (see `setup-envtest use -p path`); `make
-// test-envtest` wires this up automatically.
+// Package envtest tests DatabaseService reconciliation against envtest. Run it with make test-envtest.
 package envtest
 
 import (
@@ -43,12 +24,13 @@ import (
 
 	"github.com/go-logr/logr"
 	. "github.com/onsi/gomega"
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 
-	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/reconciler"
 
 	servicesv1alpha1 "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
@@ -57,12 +39,7 @@ import (
 	"github.com/opendatahub-io/opendatahub-db-operator/test/support"
 )
 
-// TestDatabaseServiceReconcilesToReady proves the DatabaseService reconciler
-// wired into pkg/manager.New drives the default-db-operator singleton to
-// status.phase Ready with a True Ready condition, against envtest's fake
-// apiserver with the generated CRD installed -- the envtest half of phase
-// 2's verification ladder (see docs/plan.md phase 2, verification rung 2).
-// The real-cluster half lives in test/integration.
+// TestDatabaseServiceReconcilesToReady verifies status writes against the local API server.
 func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 	g := NewWithT(t)
 
@@ -103,10 +80,19 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 	mgr, err := modulemanager.New(ctx, restCfg, cfg)
 	g.Expect(err).NotTo(HaveOccurred())
 
-	managerErrCh := make(chan error, 1)
+	managerDone := make(chan struct{})
+	var managerErr error
 	go func() {
-		managerErrCh <- mgr.Start(ctx)
+		managerErr = mgr.Start(ctx)
+		close(managerDone)
 	}()
+	t.Cleanup(func() {
+		cancel()
+		<-managerDone
+		if managerErr != nil {
+			t.Errorf("manager failed while stopping: %v", managerErr)
+		}
+	})
 
 	g.Expect(mgr.GetCache().WaitForCacheSync(ctx)).To(BeTrue(), "manager cache failed to sync")
 
@@ -121,8 +107,8 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 
 	g.Eventually(func(g Gomega) {
 		select {
-		case err := <-managerErrCh:
-			g.Expect(err).NotTo(HaveOccurred(), "manager stopped unexpectedly")
+		case <-managerDone:
+			g.Expect(managerDone).NotTo(BeClosed(), "manager stopped unexpectedly: %v", managerErr)
 		default:
 		}
 
@@ -130,18 +116,11 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 		g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(instance), got)).To(Succeed())
 		g.Expect(got.Status.Phase).To(Equal(reconciler.DefaultPhaseReady))
 
-		readyCond := readyCondition(got.Status.Conditions)
+		readyCond := conditions.FindStatusCondition(got, string(fwapi.ConditionTypeReady))
 		g.Expect(readyCond).NotTo(BeNil(), "no Ready condition on status.conditions")
 		g.Expect(readyCond.Status).To(Equal(metav1.ConditionTrue))
+		release := got.Status.ComponentReleaseStatus.GetRelease(moduleconfig.ReleasePlatform)
+		g.Expect(release).NotTo(BeNil(), "no platform release in status.releases")
+		g.Expect(release.Version).To(Equal(cfg.ComponentRelease().Version))
 	}).Should(Succeed())
-}
-
-func readyCondition(conditions []fwapi.Condition) *fwapi.Condition {
-	for i := range conditions {
-		if conditions[i].Type == string(fwapi.ConditionTypeReady) {
-			return &conditions[i]
-		}
-	}
-
-	return nil
 }

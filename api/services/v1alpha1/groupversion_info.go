@@ -14,11 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package v1alpha1 contains API Schema definitions for the services v1alpha1
-// API group: DatabaseService, the module-enablement CR. A distinct group
-// from components.platform.opendatahub.io -- this CR represents a platform
-// infrastructure service, not a user-facing ML/serving component the way
-// Ray/ModelRegistry's Module CRs do.
+// Package v1alpha1 defines the services.platform.opendatahub.io API.
 // +kubebuilder:object:generate=true
 // +groupName=services.platform.opendatahub.io
 package v1alpha1
@@ -30,24 +26,20 @@ import (
 )
 
 const (
+	// GroupName is the DNS subdomain for this API.
 	GroupName = "services.platform.opendatahub.io"
-	Version   = "v1alpha1"
+	// Version is the served API version.
+	Version = "v1alpha1"
 )
 
 var (
-	// SchemeGroupVersion is group version used to register these objects.
-	// This name is used by applyconfiguration generators (e.g. controller-gen).
+	// SchemeGroupVersion identifies the API version registered by this package.
 	SchemeGroupVersion = schema.GroupVersion{Group: GroupName, Version: Version}
 
-	// GroupVersion is an alias for SchemeGroupVersion, for backward compatibility.
+	// GroupVersion is the compatibility name for SchemeGroupVersion.
 	GroupVersion = SchemeGroupVersion
 
-	// SchemeBuilder collects each type file's registration function. Built
-	// directly on apimachinery's runtime.SchemeBuilder rather than
-	// controller-runtime's scheme.Builder helper, which is deprecated for
-	// api packages precisely because it drags in controller-runtime as a
-	// dependency of a package that should only depend on the standard
-	// library, apimachinery, and other api packages.
+	// SchemeBuilder registers this package's API types with runtime.Scheme.
 	SchemeBuilder = &runtime.SchemeBuilder{}
 
 	// AddToScheme adds the types in this group-version to the given scheme.

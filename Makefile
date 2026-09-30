@@ -4,7 +4,8 @@
 # Image URL to use for all building/pushing image targets.
 IMG ?= quay.io/opendatahub/opendatahub-db-operator:latest
 # YEAR defines the year value used for substituting the YEAR placeholder in the boilerplate header.
-YEAR ?= $(shell date +%Y)
+# Keep generated file headers stable across calendar years.
+YEAR ?= 2026
 
 # This repo builds container images with podman, not docker.
 CONTAINER_TOOL ?= podman
@@ -42,7 +43,7 @@ help: ## Display this help.
 ##@ Development
 
 .PHONY: manifests
-manifests: ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
+manifests: ## Generate the manager ClusterRole and CRDs.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
 
 .PHONY: generate
@@ -96,7 +97,7 @@ test-integration: test-integration-setup test-integration-run ## Set up and run 
 
 .PHONY: test-e2e-setup
 test-e2e-setup: ## Prepare a cluster for e2e tests (no-op until phase 3 adds a Helm-installable operator).
-	@echo "e2e install path not wired up yet (phase 1 scaffold has no chart to install) -- nothing to do."
+	@echo "e2e installation is not wired up yet; nothing to do."
 
 .PHONY: test-e2e-run
 test-e2e-run: ## Run e2e tests only (operator must already be deployed).

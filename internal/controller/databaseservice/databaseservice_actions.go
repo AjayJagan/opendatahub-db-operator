@@ -19,7 +19,6 @@ package databaseservice
 import (
 	"context"
 	"fmt"
-	"slices"
 
 	common "github.com/opendatahub-io/odh-platform-utilities/api/common"
 	odhtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
@@ -33,6 +32,6 @@ func (m *Module) reportStatus(_ context.Context, rr *odhtypes.ReconciliationRequ
 	if !ok {
 		return fmt.Errorf("instance is not a DatabaseService")
 	}
-	obj.Status.Releases = slices.Clone([]common.ComponentRelease{m.cfg.ComponentRelease()})
+	obj.Status.Releases = []common.ComponentRelease{m.cfg.ComponentRelease()}
 	return nil
 }

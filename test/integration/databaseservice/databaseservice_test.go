@@ -14,16 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package databaseservice holds the real-cluster reconciler test for
-// DatabaseService. It's a separate package (and therefore a separate `go
-// test` binary/process) from test/integration's manager-startup suite: both
-// tests build a manager via pkg/manager.New, which registers a
-// controller-runtime controller named "databaseservice" in a
-// process-global registry -- running both in the same test binary trips
-// controller-runtime's duplicate-controller-name validation on the second
-// manager. Separate packages give each its own process, avoiding that
-// collision without needing SkipNameValidation or any change to
-// pkg/manager itself.
+// Package databaseservice tests reconciliation against a real cluster in a separate test process.
 package databaseservice
 
 import (
@@ -34,11 +25,13 @@ import (
 
 	"github.com/go-logr/logr"
 	. "github.com/onsi/gomega"
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/reconciler"
 
 	servicesv1alpha1 "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
@@ -49,16 +42,7 @@ import (
 
 const testNamespacePrefix = "opendatahub-db-operator-databaseservice-it"
 
-// TestDatabaseServiceReconcilesToReady is the real-cluster half of phase 2's
-// verification ladder (see docs/plan.md phase 2, verification rung 2): the
-// envtest suite in test/envtest proves the reconciler against envtest's fake
-// apiserver, but per the PoC's own convention that's not sufficient on its
-// own -- envtest wouldn't catch anything that only breaks against a real
-// apiserver (real RBAC enforcement, a real etcd, real CRD conversion). This
-// test applies the generated CRD (via `make test-integration-setup`, run
-// before this suite), starts a real manager against the current kubeconfig
-// context exactly like TestManagerStartsAndBecomesHealthy does, creates the
-// default-db-operator singleton, and asserts it reaches Ready.
+// TestDatabaseServiceReconcilesToReady verifies status writes against a connected cluster.
 func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 	g := NewWithT(t)
 
@@ -107,63 +91,68 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	if created {
 		t.Cleanup(func() {
-			_ = support.DeleteNamespace(context.Background(), mgr.GetClient(), testNamespace, nsUID)
+			if err := support.DeleteNamespace(context.Background(), mgr.GetClient(), testNamespace, nsUID); err != nil {
+				t.Errorf("cleaning up test namespace: %v", err)
+			}
 		})
 	}
 
 	cli := mgr.GetClient()
 
-	// DatabaseService is a cluster-scoped singleton -- CEL-enforced to the
-	// name below -- so, unlike the per-run namespace, this test can't create
-	// a uniquely-named instance of its own. Create it, and fail clearly on
-	// AlreadyExists, BEFORE starting the manager: mgr.Start() begins the
-	// reconciler's watch immediately once its cache syncs, so if the create
-	// happened after Start (as an earlier version of this test did), a
-	// pre-existing singleton (e.g. a deployed operator, or a concurrent run
-	// that raced this one) could already be reconciled -- and have its
-	// status.releases overwritten with this test's config -- before the
-	// AlreadyExists error ever surfaces. Creating first, against the manager's
-	// client before its cache/watches exist, closes that window: nothing this
-	// test's manager reconciles can be a singleton it doesn't own.
+	// This cluster-scoped singleton requires exclusive use: no deployed
+	// operator or concurrent test manager may reconcile it during this test.
 	instance := &servicesv1alpha1.DatabaseService{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: servicesv1alpha1.DatabaseServiceInstanceName,
 		},
 	}
-	g.Expect(cli.Create(ctx, instance)).To(Succeed(),
-		"creating the singleton DatabaseService -- if this fails with AlreadyExists, "+
-			"another default-db-operator CR is already on this cluster (e.g. a deployed operator "+
-			"or a concurrent test run); this test does not attempt to reuse or delete it")
+	if err := cli.Create(ctx, instance); err != nil {
+		t.Fatalf(
+			"creating the singleton DatabaseService: %v; this test requires exclusive use of "+
+				"default-db-operator and will not reuse or delete it",
+			err,
+		)
+	}
 
 	createdUID := instance.UID
 	t.Cleanup(func() {
-		_ = cli.Delete(context.Background(), &servicesv1alpha1.DatabaseService{
+		err := cli.Delete(context.Background(), &servicesv1alpha1.DatabaseService{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: servicesv1alpha1.DatabaseServiceInstanceName,
 				UID:  createdUID,
 			},
 		}, client.Preconditions{UID: &createdUID})
+		if err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+			t.Errorf("cleaning up test DatabaseService singleton: %v", err)
+		}
 	})
 
-	managerErrCh := make(chan error, 1)
+	managerDone := make(chan struct{})
+	var managerErr error
 	go func() {
-		managerErrCh <- mgr.Start(ctx)
+		managerErr = mgr.Start(ctx)
+		close(managerDone)
 	}()
+	t.Cleanup(func() {
+		cancel()
+		<-managerDone
+		g.Expect(managerErr).NotTo(HaveOccurred(), "manager failed while stopping")
+	})
 
 	g.Expect(mgr.GetCache().WaitForCacheSync(ctx)).To(BeTrue(), "manager cache failed to sync")
 
 	select {
 	case <-mgr.Elected():
-	case err := <-managerErrCh:
-		t.Fatalf("manager stopped before being elected: %v", err)
+	case <-managerDone:
+		t.Fatalf("manager stopped before being elected: %v", managerErr)
 	case <-time.After(gomegaCfg.EventuallyTimeout):
 		t.Fatal("timed out waiting for leader election")
 	}
 
 	g.Eventually(func(g Gomega) {
 		select {
-		case err := <-managerErrCh:
-			g.Expect(err).NotTo(HaveOccurred(), "manager stopped unexpectedly")
+		case <-managerDone:
+			g.Expect(managerErr).NotTo(HaveOccurred(), "manager stopped unexpectedly")
 		default:
 		}
 
@@ -171,18 +160,11 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 		g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(instance), got)).To(Succeed())
 		g.Expect(got.Status.Phase).To(Equal(reconciler.DefaultPhaseReady))
 
-		readyCond := readyCondition(got.Status.Conditions)
+		readyCond := conditions.FindStatusCondition(got, string(fwapi.ConditionTypeReady))
 		g.Expect(readyCond).NotTo(BeNil(), "no Ready condition on status.conditions")
 		g.Expect(readyCond.Status).To(Equal(metav1.ConditionTrue))
+		release := got.Status.ComponentReleaseStatus.GetRelease(moduleconfig.ReleasePlatform)
+		g.Expect(release).NotTo(BeNil(), "no platform release in status.releases")
+		g.Expect(release.Version).To(Equal(cfg.ComponentRelease().Version))
 	}).Should(Succeed())
-}
-
-func readyCondition(conditions []fwapi.Condition) *fwapi.Condition {
-	for i := range conditions {
-		if conditions[i].Type == string(fwapi.ConditionTypeReady) {
-			return &conditions[i]
-		}
-	}
-
-	return nil
 }

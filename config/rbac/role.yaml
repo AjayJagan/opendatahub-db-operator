@@ -40,19 +40,9 @@ rules:
   resources:
   - databaseservices
   verbs:
-  - create
-  - delete
   - get
   - list
-  - patch
-  - update
   - watch
-- apiGroups:
-  - services.platform.opendatahub.io
-  resources:
-  - databaseservices/finalizers
-  verbs:
-  - update
 - apiGroups:
   - services.platform.opendatahub.io
   resources:

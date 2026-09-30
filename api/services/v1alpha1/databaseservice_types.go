@@ -24,27 +24,14 @@ import (
 )
 
 const (
-	// DatabaseServiceComponentName is the component name used in labels and status.
-	DatabaseServiceComponentName = "db-operator"
-
 	// DatabaseServiceInstanceName is the singleton instance name enforced by
 	// the CEL rule below.
 	DatabaseServiceInstanceName = "default-db-operator"
-
-	// DatabaseServiceKind is the Kubernetes kind string.
-	DatabaseServiceKind = "DatabaseService"
-
-	DatabaseServiceResource = "databaseservices"
-	DatabaseServiceCRDName  = DatabaseServiceResource + "." + GroupName
 )
 
-// Compile-time interface assertion.
 var _ fwapi.PlatformObject = (*DatabaseService)(nil)
 
-// DatabaseServiceSpec defines the desired state of DatabaseService. No
-// custom fields: this CR's only job is to let the ODH Operator enable/gate
-// on this module like any other -- it does not deploy a separate
-// third-party operand the way other modules' Module CRs do.
+// DatabaseServiceSpec is empty because DatabaseService has no configurable desired state.
 type DatabaseServiceSpec struct {
 }
 
@@ -58,8 +45,8 @@ type DatabaseServiceStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:scope=Cluster
 // +kubebuilder:validation:XValidation:rule="self.metadata.name == 'default-db-operator'",message="DatabaseService name must be default-db-operator"
-// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`,description="Ready"
-// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`,description="Reason"
+// +kubebuilder:printcolumn:name="Ready",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].status`,description="Whether the DatabaseService is ready"
+// +kubebuilder:printcolumn:name="Reason",type=string,JSONPath=`.status.conditions[?(@.type=="Ready")].reason`,description="Reason the DatabaseService is not ready"
 // +kubebuilder:printcolumn:name="Version",type=string,JSONPath=`.status.releases[?(@.name=="platform")].version`,description="Module Version"
 
 // DatabaseService is the Schema for the databaseservices API.
@@ -71,29 +58,34 @@ type DatabaseService struct {
 	Status DatabaseServiceStatus `json:"status,omitempty"`
 }
 
+// GetStatus implements fwapi.WithStatus.
 func (c *DatabaseService) GetStatus() *fwapi.Status {
 	return &c.Status.Status
 }
 
+// GetConditions implements fwapi.ConditionsAccessor.
 func (c *DatabaseService) GetConditions() []fwapi.Condition {
 	return c.Status.GetConditions()
 }
 
+// SetConditions implements fwapi.ConditionsAccessor.
 func (c *DatabaseService) SetConditions(conditions []fwapi.Condition) {
 	c.Status.SetConditions(conditions)
 }
 
+// GetReleaseStatus implements common.WithReleases.
 func (c *DatabaseService) GetReleaseStatus() *common.ComponentReleaseStatus {
 	return &c.Status.ComponentReleaseStatus
 }
 
+// SetReleaseStatus implements common.WithReleases.
 func (c *DatabaseService) SetReleaseStatus(status common.ComponentReleaseStatus) {
 	c.Status.ComponentReleaseStatus = status
 }
 
 // +kubebuilder:object:root=true
 
-// DatabaseServiceList contains a list of DatabaseService.
+// DatabaseServiceList is returned by LIST requests for DatabaseService.
 type DatabaseServiceList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
