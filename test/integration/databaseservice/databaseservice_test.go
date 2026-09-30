@@ -111,28 +111,20 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 		})
 	}
 
-	managerErrCh := make(chan error, 1)
-	go func() {
-		managerErrCh <- mgr.Start(ctx)
-	}()
-
-	g.Expect(mgr.GetCache().WaitForCacheSync(ctx)).To(BeTrue(), "manager cache failed to sync")
-
-	select {
-	case <-mgr.Elected():
-	case err := <-managerErrCh:
-		t.Fatalf("manager stopped before being elected: %v", err)
-	case <-time.After(gomegaCfg.EventuallyTimeout):
-		t.Fatal("timed out waiting for leader election")
-	}
-
 	cli := mgr.GetClient()
 
 	// DatabaseService is a cluster-scoped singleton -- CEL-enforced to the
 	// name below -- so, unlike the per-run namespace, this test can't create
-	// a uniquely-named instance of its own. Fail clearly rather than
-	// clobbering state this run doesn't own if one already exists (e.g. a
-	// concurrent run, or an operator already deployed on this cluster).
+	// a uniquely-named instance of its own. Create it, and fail clearly on
+	// AlreadyExists, BEFORE starting the manager: mgr.Start() begins the
+	// reconciler's watch immediately once its cache syncs, so if the create
+	// happened after Start (as an earlier version of this test did), a
+	// pre-existing singleton (e.g. a deployed operator, or a concurrent run
+	// that raced this one) could already be reconciled -- and have its
+	// status.releases overwritten with this test's config -- before the
+	// AlreadyExists error ever surfaces. Creating first, against the manager's
+	// client before its cache/watches exist, closes that window: nothing this
+	// test's manager reconciles can be a singleton it doesn't own.
 	instance := &servicesv1alpha1.DatabaseService{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: servicesv1alpha1.DatabaseServiceInstanceName,
@@ -152,6 +144,21 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 			},
 		}, client.Preconditions{UID: &createdUID})
 	})
+
+	managerErrCh := make(chan error, 1)
+	go func() {
+		managerErrCh <- mgr.Start(ctx)
+	}()
+
+	g.Expect(mgr.GetCache().WaitForCacheSync(ctx)).To(BeTrue(), "manager cache failed to sync")
+
+	select {
+	case <-mgr.Elected():
+	case err := <-managerErrCh:
+		t.Fatalf("manager stopped before being elected: %v", err)
+	case <-time.After(gomegaCfg.EventuallyTimeout):
+		t.Fatal("timed out waiting for leader election")
+	}
 
 	g.Eventually(func(g Gomega) {
 		select {

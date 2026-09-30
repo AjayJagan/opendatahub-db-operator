@@ -29,6 +29,13 @@ rules:
   verbs:
   - create
 - apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
   - services.platform.opendatahub.io
   resources:
   - databaseservices

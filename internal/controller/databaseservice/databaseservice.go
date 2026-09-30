@@ -69,6 +69,14 @@ func NewModule(cfg *moduleconfig.Config, opts ...Option) *Module {
 // +kubebuilder:rbac:groups=authorization.k8s.io,resources=subjectaccessreviews,verbs=create
 // +kubebuilder:rbac:urls=/metrics,verbs=get
 
+// odh-platform-utilities' reconciler records reconcile/provisioning failures
+// via manager.GetEventRecorder (not the deprecated GetEventRecorderFor), which
+// controller-runtime backs with the events.k8s.io/v1 broadcaster -- a
+// different API group than the leader-election Role's core "events" grant,
+// and one that Role (namespaced to the operator's own namespace) wouldn't
+// cover for this cluster-scoped CR's events anyway.
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
+
 func NewReconciler(
 	ctx context.Context,
 	mgr ctrl.Manager,
