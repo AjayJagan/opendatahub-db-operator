@@ -29,6 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	servicesv1alpha1 "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
+	"github.com/opendatahub-io/opendatahub-db-operator/internal/controller/databaseservice"
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
 )
 
@@ -39,10 +41,9 @@ const (
 
 // NewScheme registers the types this module needs.
 //
-// Phase 1 only registers client-go's built-in types and apiextensions (so
-// the manager can start and, once phase 2 exists, controller-gen-produced
-// CRD YAML can round-trip through the same scheme). It does NOT register
-// any module-specific CRD scheme yet -- there is no CRD to register.
+// Phase 1 registered only client-go's built-in types and apiextensions.
+// Phase 2 adds the DatabaseService API's scheme now that
+// api/services/v1alpha1 exists.
 func NewScheme() (*runtime.Scheme, error) {
 	scheme := runtime.NewScheme()
 
@@ -52,13 +53,9 @@ func NewScheme() (*runtime.Scheme, error) {
 	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("adding apiextensions scheme: %w", err)
 	}
-
-	// PHASE 2 EXTENSION POINT: register the DatabaseService API's scheme here
-	// once api/services/v1alpha1 exists, e.g.:
-	//
-	//   if err := servicesv1alpha1.AddToScheme(scheme); err != nil {
-	//       return nil, fmt.Errorf("adding services scheme: %w", err)
-	//   }
+	if err := servicesv1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("adding services scheme: %w", err)
+	}
 
 	return scheme, nil
 }
@@ -114,14 +111,11 @@ func New(
 		return nil, fmt.Errorf("creating manager: %w", err)
 	}
 
-	// PHASE 2 EXTENSION POINT: wire up the DatabaseService reconciler here,
-	// once internal/controller/databaseservice exists, e.g.:
-	//
-	//   if err := databaseservice.NewReconciler(ctx, mgr, cfg, databaseservice.Options{
-	//       Recorder: mgr.GetEventRecorder(servicesv1alpha1.DatabaseServiceResource),
-	//   }); err != nil {
-	//       return nil, fmt.Errorf("creating databaseservice reconciler: %w", err)
-	//   }
+	if err := databaseservice.NewReconciler(ctx, mgr, cfg, databaseservice.Options{
+		Recorder: mgr.GetEventRecorder(servicesv1alpha1.DatabaseServiceResource),
+	}); err != nil {
+		return nil, fmt.Errorf("creating databaseservice reconciler: %w", err)
+	}
 
 	if err := mgr.AddHealthzCheck(healthCheckName, healthz.Ping); err != nil {
 		return nil, fmt.Errorf("setting up health check: %w", err)

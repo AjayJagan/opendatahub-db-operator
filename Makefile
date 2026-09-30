@@ -23,6 +23,12 @@ GOLANGCI_LINT  ?= golangci-lint
 HELM           ?= helm
 KUBECTL        ?= kubectl
 KIND           ?= kind
+ENVTEST        ?= setup-envtest
+
+# Version of the envtest control-plane binaries (etcd/kube-apiserver) to use
+# for the envtest suite under test/envtest. Keep in sync with
+# .github/workflows/ci.yaml's envtest job.
+ENVTEST_K8S_VERSION ?= 1.31.0
 
 .PHONY: all
 all: build
@@ -69,12 +75,17 @@ lint-config: ## Verify golangci-lint linter configuration.
 	$(GOLANGCI_LINT) config verify
 
 .PHONY: test
-test: ## Run unit tests (everything outside test/integration and test/e2e).
-	go test $$(go list ./... | grep -v '/test/integration' | grep -v '/test/e2e') -coverprofile cover.out
+test: ## Run unit tests (everything outside test/integration, test/envtest, and test/e2e).
+	go test $$(go list ./... | grep -v '/test/integration' | grep -v '/test/envtest' | grep -v '/test/e2e') -coverprofile cover.out
+
+.PHONY: test-envtest
+test-envtest: manifests ## Run the envtest-based reconciler suite (no external cluster required).
+	KUBEBUILDER_ASSETS="$$($(ENVTEST) use $(ENVTEST_K8S_VERSION) -p path)" \
+		go test ./test/envtest/... -v -timeout 5m -failfast
 
 .PHONY: test-integration-setup
-test-integration-setup: ## Prepare the cluster for integration tests.
-	@echo "No CRDs to install yet (phase 1 scaffold has none) -- nothing to do."
+test-integration-setup: manifests ## Prepare the cluster for integration tests.
+	$(KUSTOMIZE) build config/crd | $(KUBECTL) apply -f -
 
 .PHONY: test-integration-run
 test-integration-run: ## Run integration tests against the current kubeconfig context's cluster.
