@@ -11,3 +11,24 @@ infrastructure CRDs consumers use to request schemas and database claims.
 - `make build` — build the manager binary.
 - `make test` — run the unit and integration test suites.
 - `make lint` — run static analysis via `golangci-lint`.
+
+## Installing this chart
+
+The chart has no namespace setting in `values.yaml`; install it into the namespace this operator uses elsewhere
+in this repo's kustomize bundle (`odh-db-operator-system`), or your own choice of namespace:
+
+```sh
+helm install opendatahub-db-operator config/chart --create-namespace --namespace odh-db-operator-system
+```
+
+After installation, apply the cluster-scoped `DatabaseService` singleton and wait for it to reconcile to Ready:
+
+```sh
+kubectl apply -f - <<'EOF'
+apiVersion: services.platform.opendatahub.io/v1alpha1
+kind: DatabaseService
+metadata:
+  name: default-db-operator
+EOF
+kubectl wait --for=condition=Ready databaseservice/default-db-operator --timeout=5m
+```
