@@ -152,12 +152,13 @@ container-load-kind: ## Load $(IMG) into a Kind cluster. `kind load docker-image
 ##@ Helm
 
 .PHONY: helm
-helm: manifests generate ## Generate a Helm chart from kustomize output via chartgen.
+helm: manifests generate ## Generate and lint the Helm chart from kustomize output via chartgen.
 	# chartgen itself only replaces config/chart's contents after fully
 	# rendering and validating the new chart (see run() in
 	# cmd/chartgen/chartgen.go) -- deleting the directory upfront here would
 	# defeat that: a failed run would still leave config/chart empty/gone.
 	$(KUSTOMIZE) build config/default | go run ./cmd/main.go chartgen --output config/chart
+	$(HELM) lint config/chart
 
 ##@ Deployment
 

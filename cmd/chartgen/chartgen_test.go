@@ -559,6 +559,59 @@ func TestRun_OnlyTemplatesOperatorConfigMap(t *testing.T) {
 	g.Expect(rendered).NotTo(ContainSubstring("bar: {{"))
 }
 
+func TestRun_UsesStableNameForKustomizeGeneratedOperatorConfigMap(t *testing.T) {
+	g := NewWithT(t)
+
+	const hashedConfigMapName = "odh-db-operator-config-55t5fmg58h"
+	const manifest = `
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: operator
+  namespace: odh-db-operator-system
+spec:
+  template:
+    spec:
+      containers:
+      - name: manager
+        image: controller:latest
+        env:
+        - name: ODH_MODULE_OPERATOR_CONFIGURATION_PATH
+          value: /etc/controller/config
+        volumeMounts:
+        - name: config
+          mountPath: /etc/controller/config
+      volumes:
+      - name: config
+        configMap:
+          name: ` + hashedConfigMapName + `
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ` + hashedConfigMapName + `
+  namespace: odh-db-operator-system
+data:
+  platformType: OpenDataHub
+`
+
+	outputDir := t.TempDir()
+	g.Expect(run(strings.NewReader(manifest), outputDir, "test", "0.1.0")).To(Succeed())
+
+	deployment, err := os.ReadFile(filepath.Join(outputDir, templatesDirName, "apps_v1_deployment.yaml"))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(string(deployment)).To(ContainSubstring(
+		"checksum/config: {{ include (print $.Template.BasePath \"/core_v1_configmap.yaml\") . | sha256sum }}",
+	))
+	g.Expect(string(deployment)).To(ContainSubstring("name: odh-db-operator-config"))
+	g.Expect(string(deployment)).NotTo(ContainSubstring(hashedConfigMapName))
+
+	configMap, err := os.ReadFile(filepath.Join(outputDir, templatesDirName, "core_v1_configmap.yaml"))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(string(configMap)).To(ContainSubstring("name: odh-db-operator-config"))
+	g.Expect(string(configMap)).NotTo(ContainSubstring(hashedConfigMapName))
+}
+
 const deploymentWithAuxiliaryServiceAccountManifest = `
 apiVersion: apps/v1
 kind: Deployment

@@ -234,7 +234,7 @@ func TestTransformDeployment_AddsConfigChecksumAnnotationWhenConfigMapPresent(t 
 	rendered, err := transformDeployment(&obj, true, true)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(rendered).To(ContainSubstring(
-		`opendatahub.io/config-checksum: {{ include (print $.Template.BasePath "/core_v1_configmap.yaml") . | sha256sum }}`,
+		`checksum/config: {{ include (print $.Template.BasePath "/core_v1_configmap.yaml") . | sha256sum }}`,
 	))
 }
 
@@ -245,7 +245,7 @@ func TestTransformDeployment_OmitsConfigChecksumAnnotationWithoutConfigMap(t *te
 
 	rendered, err := transformDeployment(&obj, false, true)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(rendered).NotTo(ContainSubstring("config-checksum"))
+	g.Expect(rendered).NotTo(ContainSubstring("checksum/config"))
 }
 
 // replaceNamespace only ever touches a resource's own top-level

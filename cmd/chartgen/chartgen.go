@@ -137,6 +137,7 @@ func run(
 		// same-named one regardless of what this check finds.)
 		operatorConfigMapName = ""
 	}
+	operatorConfigMapStableName := stripKustomizeConfigMapHash(operatorConfigMapName)
 
 	saName, saNamespace, err := OperatorServiceAccountRef(operatorDeployment)
 	if err != nil {
@@ -163,6 +164,7 @@ func run(
 			name:      operatorConfigMapName,
 			namespace: operatorDeployment.GetNamespace(),
 		},
+		operatorConfigMapStableName:   operatorConfigMapStableName,
 		operatorServiceAccount:        resourceRef{name: saName, namespace: saNamespace},
 		operatorServiceAccountManaged: saManaged,
 	}
@@ -385,6 +387,24 @@ func resourceExists(
 	}
 
 	return false
+}
+
+// stripKustomizeConfigMapHash removes the 10-character suffix Kustomize
+// appends to generated ConfigMap names. The chart uses a stable name and
+// relies on checksum/config to trigger a rollout when the ConfigMap changes.
+func stripKustomizeConfigMapHash(name string) string {
+	separator := strings.LastIndex(name, "-")
+	if separator < 0 || len(name)-separator-1 != 10 {
+		return name
+	}
+
+	for _, char := range name[separator+1:] {
+		if (char < 'a' || char > 'z') && (char < '0' || char > '9') {
+			return name
+		}
+	}
+
+	return name[:separator]
 }
 
 // groupByGVK groups resources by their GroupVersionKind, skipping Namespaces.

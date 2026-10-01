@@ -69,7 +69,7 @@ const (
 	// configChecksumAnnotationKey is the pod-template annotation that forces
 	// a rollout whenever the operator's own ConfigMap content changes --
 	// see stampConfigChecksumPlaceholder.
-	configChecksumAnnotationKey = "opendatahub.io/config-checksum"
+	configChecksumAnnotationKey = "checksum/config"
 	configChecksumPlaceholder   = "__CHARTGEN_CONFIG_CHECKSUM__"
 
 	// webhookServiceNamespacePlaceholder marks a webhook's
@@ -107,9 +107,10 @@ type chartContext struct {
 	// operator-specific rendering to. Any other Deployment in the input
 	// (there shouldn't be one today, but nothing enforces that) is left
 	// alone via transformGeneric instead.
-	operatorDeployment     resourceRef
-	operatorConfigMap      resourceRef
-	operatorServiceAccount resourceRef
+	operatorDeployment          resourceRef
+	operatorConfigMap           resourceRef
+	operatorConfigMapStableName string
+	operatorServiceAccount      resourceRef
 	// operatorServiceAccountManaged is deliberately separate from whether
 	// operatorServiceAccount.name is set: the identity is always populated
 	// whenever the Deployment names a serviceAccountName at all (managed or
@@ -192,6 +193,15 @@ func transformResource(
 			// would silently change an unrelated workload's identity.
 			return transformGeneric(obj)
 		}
+		if chartCtx.operatorConfigMap.name != "" && chartCtx.operatorConfigMapStableName != "" {
+			if err := rewriteOperatorConfigMapName(
+				obj,
+				chartCtx.operatorConfigMap.name,
+				chartCtx.operatorConfigMapStableName,
+			); err != nil {
+				return "", fmt.Errorf("deployment %s: rewriting ConfigMap name: %w", obj.GetName(), err)
+			}
+		}
 
 		return transformDeployment(obj, chartCtx.operatorConfigMap.name != "", chartCtx.operatorServiceAccountManaged)
 	case gvk.ServiceAccount:
@@ -209,6 +219,10 @@ func transformResource(
 		isOperatorConfigMap := obj.GetName() == chartCtx.operatorConfigMap.name &&
 			obj.GetNamespace() == chartCtx.operatorConfigMap.namespace
 		if isOperatorConfigMap {
+			if chartCtx.operatorConfigMapStableName != "" {
+				obj.SetName(chartCtx.operatorConfigMapStableName)
+			}
+
 			return transformConfigMap(obj)
 		}
 		// Not the ConfigMap mounted into the operator's own container --
@@ -226,6 +240,37 @@ func transformResource(
 	default:
 		return transformGeneric(obj)
 	}
+}
+
+// rewriteOperatorConfigMapName replaces the kustomize-generated ConfigMap
+// name in the operator Deployment's volumes with the stable name used by the
+// chart. Kustomize appends a content hash to generated ConfigMap names; Helm
+// uses the checksum/config pod-template annotation for rollouts instead.
+func rewriteOperatorConfigMapName(
+	obj *unstructured.Unstructured,
+	originalName string,
+	stableName string,
+) error {
+	volumes, found, err := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "volumes")
+	if err != nil || !found {
+		return err
+	}
+
+	for _, item := range volumes {
+		volume, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		configMap, ok := volume["configMap"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if name, _ := configMap["name"].(string); name == originalName {
+			configMap["name"] = stableName
+		}
+	}
+
+	return unstructured.SetNestedSlice(obj.Object, volumes, "spec", "template", "spec", "volumes")
 }
 
 // transformDeployment injects Helm value references for image, resources,
