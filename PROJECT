@@ -7,5 +7,13 @@ layout:
 - go.kubebuilder.io/v4
 projectName: opendatahub-db-operator
 repo: github.com/opendatahub-io/opendatahub-db-operator
-resources: []
+resources:
+- api:
+    crdVersion: v1
+  controller: true
+  domain: platform.opendatahub.io
+  group: services
+  kind: DatabaseService
+  path: github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1
+  version: v1alpha1
 version: "3"

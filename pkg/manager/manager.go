@@ -29,6 +29,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	servicesv1alpha1 "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
+	"github.com/opendatahub-io/opendatahub-db-operator/internal/controller/databaseservice"
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
 )
 
@@ -37,12 +39,7 @@ const (
 	readyCheckName  = "readyz"
 )
 
-// NewScheme registers the types this module needs.
-//
-// Phase 1 only registers client-go's built-in types and apiextensions (so
-// the manager can start and, once phase 2 exists, controller-gen-produced
-// CRD YAML can round-trip through the same scheme). It does NOT register
-// any module-specific CRD scheme yet -- there is no CRD to register.
+// NewScheme returns a scheme with Kubernetes and DatabaseService types registered.
 func NewScheme() (*runtime.Scheme, error) {
 	scheme := runtime.NewScheme()
 
@@ -52,25 +49,18 @@ func NewScheme() (*runtime.Scheme, error) {
 	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("adding apiextensions scheme: %w", err)
 	}
-
-	// PHASE 2 EXTENSION POINT: register the DatabaseService API's scheme here
-	// once api/services/v1alpha1 exists, e.g.:
-	//
-	//   if err := servicesv1alpha1.AddToScheme(scheme); err != nil {
-	//       return nil, fmt.Errorf("adding services scheme: %w", err)
-	//   }
+	if err := servicesv1alpha1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("adding services scheme: %w", err)
+	}
 
 	return scheme, nil
 }
 
-// New builds the operator's controller-runtime manager: scheme registration,
-// leader election, health/ready checks. It does not wire up any reconciler
-// yet -- there is no CRD to reconcile until phase 2.
+// New creates the manager and registers the DatabaseService reconciler.
 func New(
 	ctx context.Context,
 	kubeConfig *rest.Config,
 	cfg *moduleconfig.Config,
-	opts ...Option,
 ) (ctrl.Manager, error) {
 	if kubeConfig == nil {
 		return nil, fmt.Errorf("kubeconfig is nil")
@@ -82,13 +72,6 @@ func New(
 	scheme, err := NewScheme()
 	if err != nil {
 		return nil, err
-	}
-
-	managerOpts := Options{}
-	for _, opt := range opts {
-		if opt != nil {
-			opt.applyOption(&managerOpts)
-		}
 	}
 
 	pprofBindAddress := ""
@@ -114,14 +97,9 @@ func New(
 		return nil, fmt.Errorf("creating manager: %w", err)
 	}
 
-	// PHASE 2 EXTENSION POINT: wire up the DatabaseService reconciler here,
-	// once internal/controller/databaseservice exists, e.g.:
-	//
-	//   if err := databaseservice.NewReconciler(ctx, mgr, cfg, databaseservice.Options{
-	//       Recorder: mgr.GetEventRecorder(servicesv1alpha1.DatabaseServiceResource),
-	//   }); err != nil {
-	//       return nil, fmt.Errorf("creating databaseservice reconciler: %w", err)
-	//   }
+	if err := databaseservice.NewReconciler(ctx, mgr, cfg); err != nil {
+		return nil, fmt.Errorf("creating databaseservice reconciler: %w", err)
+	}
 
 	if err := mgr.AddHealthzCheck(healthCheckName, healthz.Ping); err != nil {
 		return nil, fmt.Errorf("setting up health check: %w", err)

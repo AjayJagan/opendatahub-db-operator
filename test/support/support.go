@@ -14,15 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package support holds shared helpers for this module's integration and
-// e2e test suites: Gomega defaults, namespace setup, and other plumbing that
-// doesn't belong in any single test file.
-//
-// Phase 1 only needs enough here to prove the manager scaffold itself
-// starts and reaches a healthy state against a real cluster before any CRD
-// exists (RHOAIENG-96274). Cluster bootstrap helpers (spinning up a Kind
-// cluster from Go, installing CRDs, deploying via Helm) are added in later
-// phases alongside the CRDs and reconcilers that need them.
+// Package support holds shared helpers for cluster-backed tests.
 package support
 
 import (
@@ -104,9 +96,7 @@ func IntegrationTestNamespace() string {
 }
 
 // EnsureNamespace creates the given namespace if it doesn't already exist.
-// Leader election needs its target namespace to exist before the manager
-// starts (it creates a Lease there), and later phases' reconcilers will
-// need the same namespace for their own workload resources.
+// Leader election creates a Lease in this namespace, so create it before starting the manager.
 //
 // Returns the namespace's UID and whether this call is the one that created
 // it. Callers that intend to delete the namespace afterward must check
