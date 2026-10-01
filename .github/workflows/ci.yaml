@@ -134,7 +134,7 @@ jobs:
           set -euo pipefail
           rendered="$(mktemp)"
           trap 'rm -f "$rendered"' EXIT
-          helm template opendatahub-db-operator config/chart > "$rendered"
+          helm template opendatahub-db-operator config/chart --include-crds > "$rendered"
 
           actual_resources="$(awk '
             /^kind: / { kind = $2 }

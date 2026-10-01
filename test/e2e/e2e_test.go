@@ -64,9 +64,6 @@ func TestMain(m *testing.M) {
 // DatabaseService singleton. It does not start a local manager process.
 func TestHelmInstalledManagerReconcilesDatabaseService(t *testing.T) {
 	g := NewWithT(t)
-	gomegaCfg := support.LoadGomegaConfig()
-	SetDefaultEventuallyTimeout(gomegaCfg.EventuallyTimeout)
-	SetDefaultEventuallyPollingInterval(gomegaCfg.EventuallyPollingInterval)
 
 	namespace := envOrDefault("ODH_E2E_NAMESPACE", defaultNamespace)
 	release := envOrDefault("ODH_E2E_RELEASE", defaultRelease)
@@ -83,8 +80,6 @@ func TestHelmInstalledManagerReconcilesDatabaseService(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Minute)
 	t.Cleanup(cancel)
 
-	// Listing this type fails with a clear message if chart installation did
-	// not install the DatabaseService CRD.
 	g.Expect(kubeClient.List(ctx, &servicesv1alpha1.DatabaseServiceList{})).To(Succeed(),
 		"listing DatabaseService failed -- run `make test-e2e-setup` to install the Helm chart first")
 

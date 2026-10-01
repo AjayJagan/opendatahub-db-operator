@@ -242,10 +242,8 @@ func transformResource(
 	}
 }
 
-// rewriteOperatorConfigMapName replaces the kustomize-generated ConfigMap
-// name in the operator Deployment's volumes with the stable name used by the
-// chart. Kustomize appends a content hash to generated ConfigMap names; Helm
-// uses the checksum/config pod-template annotation for rollouts instead.
+// Kustomize hashes generated ConfigMaps; use a stable name because
+// checksum/config triggers rollouts when their content changes.
 func rewriteOperatorConfigMapName(
 	obj *unstructured.Unstructured,
 	originalName string,

@@ -37,6 +37,7 @@ const (
 	defaultOutputDir   = "config/chart"
 	defaultChartName   = "opendatahub-db-operator"
 	defaultChartVer    = "0.1.0"
+	crdsDirName        = "crds"
 	templatesDirName   = "templates"
 	chartYAMLFilename  = "Chart.yaml"
 	helpersTplFilename = "_helpers.tpl"
@@ -91,6 +92,9 @@ func run(
 	// apply, removing everything the previous, real chart installed.
 	if len(resources) == 0 {
 		return fmt.Errorf("no resources in input -- refusing to overwrite %s with an empty chart", outputDir)
+	}
+	if err := validateConfigMapStableNames(resources); err != nil {
+		return err
 	}
 
 	// Resolve "the operator Deployment" exactly once. Every other
@@ -177,19 +181,11 @@ func run(
 	// chart in its place, which `helm upgrade` would then apply, removing
 	// whatever the previous, real chart had installed. Rendering to a map
 	// first means a failure here leaves outputDir completely untouched.
-	rendered := make(map[string]string, len(groups)+1)
-	rendered[helpersTplFilename] = helpersTpl
-
-	for resourceGVK, res := range groups {
-		filename := gvkToFilename(resourceGVK)
-
-		content, err := renderGroup(resourceGVK, res, chartCtx)
-		if err != nil {
-			return fmt.Errorf("rendering %s: %w", filename, err)
-		}
-
-		rendered[filename] = content
+	renderedTemplates, renderedCRDs, err := renderResourceGroups(groups, chartCtx)
+	if err != nil {
+		return err
 	}
+	renderedTemplates[helpersTplFilename] = helpersTpl
 
 	valuesYAML, err := MarshalValuesYAML(values)
 	if err != nil {
@@ -233,9 +229,18 @@ func run(
 	if err := os.MkdirAll(stagingTemplatesDir, 0o755); err != nil {
 		return fmt.Errorf("creating staging templates directory: %w", err)
 	}
-	for filename, content := range rendered {
+	stagingCRDsDir := filepath.Join(stagingDir, crdsDirName)
+	if err := os.MkdirAll(stagingCRDsDir, 0o755); err != nil {
+		return fmt.Errorf("creating staging CRDs directory: %w", err)
+	}
+	for filename, content := range renderedTemplates {
 		if err := os.WriteFile(filepath.Join(stagingTemplatesDir, filename), []byte(content), 0o644); err != nil {
 			return fmt.Errorf("staging %s: %w", filename, err)
+		}
+	}
+	for filename, content := range renderedCRDs {
+		if err := os.WriteFile(filepath.Join(stagingCRDsDir, filename), []byte(content), 0o644); err != nil {
+			return fmt.Errorf("staging CRD %s: %w", filename, err)
 		}
 	}
 
@@ -255,10 +260,35 @@ func run(
 	if err := publishPath(stagingDir, outputDir, templatesDirName); err != nil {
 		return err
 	}
+	if err := publishPath(stagingDir, outputDir, crdsDirName); err != nil {
+		return err
+	}
 
 	fmt.Fprintf(os.Stderr, "Helm chart generated at %s\n", outputDir)
 
 	return nil
+}
+
+func renderResourceGroups(
+	groups map[schema.GroupVersionKind][]unstructured.Unstructured,
+	chartCtx chartContext,
+) (map[string]string, map[string]string, error) {
+	renderedTemplates := make(map[string]string, len(groups))
+	renderedCRDs := make(map[string]string)
+	for resourceGVK, resources := range groups {
+		filename := gvkToFilename(resourceGVK)
+		content, err := renderGroup(resourceGVK, resources, chartCtx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("rendering %s: %w", filename, err)
+		}
+		if isCRD(resourceGVK) {
+			renderedCRDs[filename] = content
+		} else {
+			renderedTemplates[filename] = content
+		}
+	}
+
+	return renderedTemplates, renderedCRDs, nil
 }
 
 // publishPath moves name from stagingDir into outputDir, replacing whatever
@@ -389,9 +419,7 @@ func resourceExists(
 	return false
 }
 
-// stripKustomizeConfigMapHash removes the 10-character suffix Kustomize
-// appends to generated ConfigMap names. The chart uses a stable name and
-// relies on checksum/config to trigger a rollout when the ConfigMap changes.
+// Helm uses a content checksum for rollouts, so generated ConfigMaps need stable names.
 func stripKustomizeConfigMapHash(name string) string {
 	separator := strings.LastIndex(name, "-")
 	if separator < 0 || len(name)-separator-1 != 10 {
@@ -405,6 +433,34 @@ func stripKustomizeConfigMapHash(name string) string {
 	}
 
 	return name[:separator]
+}
+
+func validateConfigMapStableNames(resources []unstructured.Unstructured) error {
+	originalNamesByStableName := make(map[string]string)
+	for i := range resources {
+		resource := &resources[i]
+		if resource.GroupVersionKind() != gvk.ConfigMap {
+			continue
+		}
+
+		originalName := resource.GetName()
+		stableName := stripKustomizeConfigMapHash(originalName)
+		if previousName, found := originalNamesByStableName[stableName]; found && previousName != originalName {
+			return fmt.Errorf(
+				"ConfigMap name collision: %q and %q both resolve to stable name %q",
+				previousName,
+				originalName,
+				stableName,
+			)
+		}
+		originalNamesByStableName[stableName] = originalName
+	}
+
+	return nil
+}
+
+func isCRD(resourceGVK schema.GroupVersionKind) bool {
+	return resourceGVK.Group == "apiextensions.k8s.io" && resourceGVK.Kind == "CustomResourceDefinition"
 }
 
 // groupByGVK groups resources by their GroupVersionKind, skipping Namespaces.

@@ -96,48 +96,32 @@ test-integration-run: ## Run integration tests against the current kubeconfig co
 test-integration: test-integration-setup test-integration-run ## Set up and run integration tests.
 
 .PHONY: test-e2e-setup
-test-e2e-setup: ## Build/load the manager image and install the Helm chart into Kind.
-	@context="$$($(KUBECTL) config current-context)"; \
-	expected="kind-$(KIND_CLUSTER)"; \
-	if [ "$$context" != "$$expected" ]; then \
-		echo "e2e requires kube context $$expected (current: $$context)" >&2; \
-		exit 1; \
-	fi
+test-e2e-setup: test-e2e-context-check ## Build/load the manager image and install the Helm chart into Kind.
 	$(KUBECTL) get --raw=/readyz >/dev/null
 	$(MAKE) test-e2e-teardown
 	$(MAKE) container-build IMG="$(IMG)"
 	$(MAKE) container-load-kind IMG="$(IMG)" KIND_CLUSTER="$(KIND_CLUSTER)"
 	$(HELM) install "$(E2E_RELEASE)" config/chart \
-		--namespace "$(E2E_NAMESPACE)" --create-namespace --wait --timeout 5m \
+		--namespace "$(E2E_NAMESPACE)" --create-namespace --atomic --wait --timeout 5m \
 		--set-string operator.image.ref="$(IMG)" \
-		--set-string operator.image.pullPolicy=IfNotPresent
+		--set-string operator.image.pullPolicy=IfNotPresent || { \
+			install_status=$$?; \
+			if ! $(KUBECTL) delete namespace "$(E2E_NAMESPACE)" --ignore-not-found --wait --timeout=5m; then \
+				echo "e2e setup failed and namespace $(E2E_NAMESPACE) cleanup also failed" >&2; \
+			fi; \
+			exit "$$install_status"; \
+		}
 
 .PHONY: test-e2e-run
-test-e2e-run: ## Verify the Helm-deployed manager reconciles DatabaseService, then clean up.
-	@context="$$($(KUBECTL) config current-context)"; \
-	expected="kind-$(KIND_CLUSTER)"; \
-	if [ "$$context" != "$$expected" ]; then \
-		echo "e2e requires kube context $$expected (current: $$context)" >&2; \
-		exit 1; \
-	fi
+test-e2e-run: test-e2e-context-check ## Verify the Helm-deployed manager reconciles DatabaseService, then clean up.
 	$(KUBECTL) get --raw=/readyz >/dev/null
 	@cleanup() { \
-		result=$$?; \
+		test_result=$$?; \
 		trap - EXIT; \
 		cleanup_result=0; \
-		cleanup_context="$$($(KUBECTL) config current-context)" || cleanup_context=""; \
-		if [ "$$cleanup_context" != "kind-$(KIND_CLUSTER)" ]; then \
-			echo "e2e cleanup requires kube context kind-$(KIND_CLUSTER) (current: $$cleanup_context)" >&2; \
-			cleanup_result=1; \
-		else \
-			if $(KUBECTL) get crd databaseservices.services.platform.opendatahub.io >/dev/null 2>&1; then \
-				$(KUBECTL) delete databaseservice default-db-operator --ignore-not-found --wait || cleanup_result=$$?; \
-			fi; \
-			$(HELM) uninstall "$(E2E_RELEASE)" --namespace "$(E2E_NAMESPACE)" --ignore-not-found --wait --timeout 5m || cleanup_result=$$?; \
-			$(KUBECTL) delete namespace "$(E2E_NAMESPACE)" --ignore-not-found --wait --timeout=5m || cleanup_result=$$?; \
-		fi; \
-		if [ "$$result" -eq 0 ]; then result=$$cleanup_result; fi; \
-		exit "$$result"; \
+		$(MAKE) test-e2e-teardown || cleanup_result=$$?; \
+		if [ "$$test_result" -ne 0 ]; then exit "$$test_result"; fi; \
+		exit "$$cleanup_result"; \
 	}; \
 	trap cleanup EXIT; \
 	ODH_E2E_NAMESPACE="$(E2E_NAMESPACE)" \
@@ -146,13 +130,7 @@ test-e2e-run: ## Verify the Helm-deployed manager reconciles DatabaseService, th
 		go test ./test/e2e/... -v -timeout 10m -failfast
 
 .PHONY: test-e2e-teardown
-test-e2e-teardown: ## Remove the e2e DatabaseService, Helm release, and namespace.
-	@context="$$($(KUBECTL) config current-context)"; \
-	expected="kind-$(KIND_CLUSTER)"; \
-	if [ "$$context" != "$$expected" ]; then \
-		echo "e2e cleanup requires kube context $$expected (current: $$context)" >&2; \
-		exit 1; \
-	fi
+test-e2e-teardown: test-e2e-context-check ## Remove the e2e DatabaseService, Helm release, and namespace.
 	@cleanup_status=0; \
 	if $(KUBECTL) get crd databaseservices.services.platform.opendatahub.io >/dev/null 2>&1; then \
 		$(KUBECTL) delete databaseservice default-db-operator --ignore-not-found --wait || cleanup_status=$$?; \
@@ -160,6 +138,15 @@ test-e2e-teardown: ## Remove the e2e DatabaseService, Helm release, and namespac
 	$(HELM) uninstall "$(E2E_RELEASE)" --namespace "$(E2E_NAMESPACE)" --ignore-not-found --wait --timeout 5m || cleanup_status=$$?; \
 	$(KUBECTL) delete namespace "$(E2E_NAMESPACE)" --ignore-not-found --wait --timeout=5m || cleanup_status=$$?; \
 	exit "$$cleanup_status"
+
+.PHONY: test-e2e-context-check
+test-e2e-context-check:
+	@context="$$($(KUBECTL) config current-context)"; \
+	expected="kind-$(KIND_CLUSTER)"; \
+	if [ "$$context" != "$$expected" ]; then \
+		echo "e2e requires kube context $$expected (current: $$context)" >&2; \
+		exit 1; \
+	fi
 
 .PHONY: test-e2e
 test-e2e: test-e2e-setup test-e2e-run ## Set up and run e2e tests.
