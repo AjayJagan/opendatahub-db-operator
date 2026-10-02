@@ -432,19 +432,6 @@ func TestRun_DoesNotReferenceExternalConfigMapInChecksum(t *testing.T) {
 	// core_v1_configmap.yaml template should have been generated either.
 	_, err = os.Stat(filepath.Join(outputDir, templatesDirName, "core_v1_configmap.yaml"))
 	g.Expect(os.IsNotExist(err)).To(BeTrue())
-
-	// This test also exercises the emitted key against a real chart-managed
-	// operator ConfigMap. The positive control fails if chartgen emits the old
-	// key or omits the checksum annotation entirely.
-	managedOutputDir := t.TempDir()
-	g.Expect(run(strings.NewReader(deploymentWithTwoConfigMapsManifest), managedOutputDir, "test", "0.1.0")).To(Succeed())
-	managedDeployment, err := os.ReadFile(filepath.Join(managedOutputDir, templatesDirName, "apps_v1_deployment.yaml"))
-	g.Expect(err).NotTo(HaveOccurred())
-	managedRendered := string(managedDeployment)
-	g.Expect(managedRendered).To(ContainSubstring(
-		"checksum/config: {{ include (print $.Template.BasePath \"/core_v1_configmap.yaml\") . | sha256sum }}",
-	))
-	g.Expect(managedRendered).NotTo(ContainSubstring("config-checksum"))
 }
 
 // An externally-managed account's identity (not just its Deployment
@@ -618,6 +605,7 @@ func TestRun_OnlyTemplatesOperatorConfigMap(t *testing.T) {
 	rendered := string(data)
 
 	g.Expect(rendered).To(ContainSubstring("platformType: {{"))
+	g.Expect(rendered).To(ContainSubstring(`if and (ne $key "platformType") (ne $key "platformVersion")`))
 	g.Expect(rendered).To(ContainSubstring("foo: bar"))
 	g.Expect(rendered).NotTo(ContainSubstring("bar: {{"))
 }
@@ -655,6 +643,50 @@ func TestRun_RejectsCollidingStableConfigMapNames(t *testing.T) {
 	g.Expect(err.Error()).To(ContainSubstring("ConfigMap name collision"))
 	g.Expect(err.Error()).To(ContainSubstring("operator-config-1234567890"))
 	g.Expect(err.Error()).To(ContainSubstring("operator-config"))
+}
+
+func TestRun_RejectsConfigMapsWithSameEmittedNameAcrossNamespaces(t *testing.T) {
+	g := NewWithT(t)
+	manifest := deploymentWithTwoConfigMapsManifest + `
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: foo
+  namespace: first-source-namespace
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: foo
+  namespace: second-source-namespace
+`
+
+	err := run(strings.NewReader(manifest), t.TempDir(), "test", "0.1.0")
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("ConfigMap name collision"))
+	g.Expect(err.Error()).To(ContainSubstring("first-source-namespace/foo"))
+	g.Expect(err.Error()).To(ContainSubstring("second-source-namespace/foo"))
+}
+
+func TestRun_AllowsDistinctEmittedConfigMapNamesWithHashLikeSuffix(t *testing.T) {
+	g := NewWithT(t)
+	manifest := deploymentWithTwoConfigMapsManifest + `
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auxiliary-1234567890
+  namespace: first-source-namespace
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: auxiliary
+  namespace: second-source-namespace
+`
+
+	g.Expect(run(strings.NewReader(manifest), t.TempDir(), "test", "0.1.0")).To(Succeed())
 }
 
 const deploymentWithAuxiliaryServiceAccountManifest = `

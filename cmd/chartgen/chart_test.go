@@ -22,6 +22,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/yaml"
 )
 
@@ -112,7 +113,7 @@ subjects:
   name: some-group
 `)
 
-	rendered, err := transformRoleBinding(&obj, resourceRef{name: "operator", namespace: "system"}, true)
+	rendered, err := transformRoleBinding(&obj, types.NamespacedName{Name: "operator", Namespace: "system"}, true)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(rendered).To(ContainSubstring(`name: {{ default (include "chart.fullname" .) .Values.serviceAccount.name }}`))
@@ -140,7 +141,7 @@ subjects:
   namespace: some-other-namespace
 `)
 
-	rendered, err := transformRoleBinding(&obj, resourceRef{name: "operator", namespace: "system"}, true)
+	rendered, err := transformRoleBinding(&obj, types.NamespacedName{Name: "operator", Namespace: "system"}, true)
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(rendered).NotTo(ContainSubstring(`{{ default (include "chart.fullname" .) .Values.serviceAccount.name }}`))

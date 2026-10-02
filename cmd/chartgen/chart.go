@@ -23,6 +23,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/yaml"
 
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/resources/gvk"
@@ -107,27 +108,18 @@ type chartContext struct {
 	// operator-specific rendering to. Any other Deployment in the input
 	// (there shouldn't be one today, but nothing enforces that) is left
 	// alone via transformGeneric instead.
-	operatorDeployment          resourceRef
-	operatorConfigMap           resourceRef
+	operatorDeployment          types.NamespacedName
+	operatorConfigMap           types.NamespacedName
 	operatorConfigMapStableName string
-	operatorServiceAccount      resourceRef
+	operatorServiceAccount      types.NamespacedName
 	// operatorServiceAccountManaged is deliberately separate from whether
-	// operatorServiceAccount.name is set: the identity is always populated
+	// operatorServiceAccount.Name is set: the identity is always populated
 	// whenever the Deployment names a serviceAccountName at all (managed or
 	// not), because the RoleBinding subject namespace tracking below needs
 	// to recognize the operator's own account either way. Only *renaming*
 	// that account to a Values-driven fullname is conditional on it being
 	// chart-managed.
 	operatorServiceAccountManaged bool
-}
-
-// resourceRef is a resource's full kind-scoped name+namespace identity --
-// used to tell "the operator's own X" apart from some other resource of the
-// same kind (or same name in a different namespace) that the input might
-// also contain.
-type resourceRef struct {
-	name      string
-	namespace string
 }
 
 // renderGroup renders a group of resources with the same GVK into a single
@@ -183,8 +175,8 @@ func transformResource(
 
 	switch resourceGVK {
 	case gvk.Deployment:
-		isOperatorDeployment := obj.GetName() == chartCtx.operatorDeployment.name &&
-			obj.GetNamespace() == chartCtx.operatorDeployment.namespace
+		isOperatorDeployment := obj.GetName() == chartCtx.operatorDeployment.Name &&
+			obj.GetNamespace() == chartCtx.operatorDeployment.Namespace
 		if !isOperatorDeployment {
 			// Some other Deployment in the input -- not the one
 			// findOperatorDeployment identified as the operator itself.
@@ -193,20 +185,20 @@ func transformResource(
 			// would silently change an unrelated workload's identity.
 			return transformGeneric(obj)
 		}
-		if chartCtx.operatorConfigMap.name != "" && chartCtx.operatorConfigMapStableName != "" {
+		if chartCtx.operatorConfigMap.Name != "" && chartCtx.operatorConfigMapStableName != "" {
 			if err := rewriteOperatorConfigMapName(
 				obj,
-				chartCtx.operatorConfigMap.name,
+				chartCtx.operatorConfigMap.Name,
 				chartCtx.operatorConfigMapStableName,
 			); err != nil {
 				return "", fmt.Errorf("deployment %s: rewriting ConfigMap name: %w", obj.GetName(), err)
 			}
 		}
 
-		return transformDeployment(obj, chartCtx.operatorConfigMap.name != "", chartCtx.operatorServiceAccountManaged)
+		return transformDeployment(obj, chartCtx.operatorConfigMap.Name != "", chartCtx.operatorServiceAccountManaged)
 	case gvk.ServiceAccount:
-		isOperatorSA := obj.GetName() == chartCtx.operatorServiceAccount.name &&
-			obj.GetNamespace() == chartCtx.operatorServiceAccount.namespace
+		isOperatorSA := obj.GetName() == chartCtx.operatorServiceAccount.Name &&
+			obj.GetNamespace() == chartCtx.operatorServiceAccount.Namespace
 		if isOperatorSA {
 			return transformServiceAccount(obj)
 		}
@@ -216,8 +208,8 @@ func transformResource(
 		// other resource in the input still references by its real name.
 		return transformGeneric(obj)
 	case gvk.ConfigMap:
-		isOperatorConfigMap := obj.GetName() == chartCtx.operatorConfigMap.name &&
-			obj.GetNamespace() == chartCtx.operatorConfigMap.namespace
+		isOperatorConfigMap := obj.GetName() == chartCtx.operatorConfigMap.Name &&
+			obj.GetNamespace() == chartCtx.operatorConfigMap.Namespace
 		if isOperatorConfigMap {
 			if chartCtx.operatorConfigMapStableName != "" {
 				obj.SetName(chartCtx.operatorConfigMapStableName)
@@ -319,13 +311,10 @@ func transformDeployment(
 
 	raw = replaceNamespace(raw)
 
-	// Replace the image field value
 	raw = replaceImageField(raw)
 
-	// Replace replicas
 	raw = replaceReplicas(raw)
 
-	// Replace resources block
 	raw = replaceResourcesField(raw)
 
 	// Replace serviceAccountName. hasChartManagedServiceAccount gates
@@ -337,7 +326,6 @@ func transformDeployment(
 	// leave the pod unable to start.
 	raw = replaceServiceAccountName(raw)
 
-	// Add imagePullSecrets
 	raw = addImagePullSecrets(raw)
 
 	if hasOperatorConfigMap {
@@ -511,7 +499,7 @@ func ensureNonEmptyConfigMapData(obj *unstructured.Unstructured) {
 // existing account" scenario transformDeployment's own comment covers).
 func transformRoleBinding(
 	obj *unstructured.Unstructured,
-	operatorServiceAccount resourceRef,
+	operatorServiceAccount types.NamespacedName,
 	renameManaged bool,
 ) (string, error) {
 	if err := stampOperatorSubjectPlaceholders(obj, operatorServiceAccount, renameManaged); err != nil {
@@ -544,10 +532,10 @@ func transformRoleBinding(
 // namespace there can never resolve to a known identity and never matches.
 func stampOperatorSubjectPlaceholders(
 	obj *unstructured.Unstructured,
-	operatorServiceAccount resourceRef,
+	operatorServiceAccount types.NamespacedName,
 	renameManaged bool,
 ) error {
-	if operatorServiceAccount.name == "" {
+	if operatorServiceAccount.Name == "" {
 		return nil
 	}
 
@@ -569,7 +557,7 @@ func stampOperatorSubjectPlaceholders(
 
 		kind, _ := subject["kind"].(string)
 		name, _ := subject["name"].(string)
-		if kind != "ServiceAccount" || name != operatorServiceAccount.name {
+		if kind != "ServiceAccount" || name != operatorServiceAccount.Name {
 			continue
 		}
 
@@ -577,7 +565,7 @@ func stampOperatorSubjectPlaceholders(
 		if subjectNamespace == "" {
 			subjectNamespace = bindingNamespace
 		}
-		if subjectNamespace != operatorServiceAccount.namespace {
+		if subjectNamespace != operatorServiceAccount.Namespace {
 			continue
 		}
 
@@ -1089,7 +1077,9 @@ func injectConfigMapValues(raw string) string {
 				indent+`  platformType: {{ default "OpenDataHub" .Values.platform.type | quote }}`,
 				indent+`  platformVersion: {{ default "" .Values.platform.version | quote }}`,
 				indent+"  {{- range $key, $val := .Values.config }}",
+				indent+`  {{- if and (ne $key "platformType") (ne $key "platformVersion") }}`,
 				indent+"  {{ $key }}: {{ $val | quote }}",
+				indent+"  {{- end }}",
 				indent+"  {{- end }}",
 			)
 

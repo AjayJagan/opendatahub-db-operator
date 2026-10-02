@@ -27,6 +27,7 @@ import (
 	"github.com/spf13/cobra"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/yaml"
 
@@ -83,18 +84,9 @@ func run(
 		return fmt.Errorf("decoding resources: %w", err)
 	}
 
-	// Reject empty or Deployment-less input before touching outputDir at
-	// all. Without this, a failed upstream producer in the documented
-	// `kustomize build ... | manager chartgen ...` pipeline (empty stdin, or
-	// stdin that decodes but never yields the operator Deployment) would
-	// still exit 0 here, having already deleted templatesDir below and
-	// written a chart with no resources -- which `helm upgrade` would then
-	// apply, removing everything the previous, real chart installed.
+	// Reject empty input so a failed upstream build cannot publish a resource-free chart.
 	if len(resources) == 0 {
 		return fmt.Errorf("no resources in input -- refusing to overwrite %s with an empty chart", outputDir)
-	}
-	if err := validateConfigMapStableNames(resources); err != nil {
-		return err
 	}
 
 	// Resolve "the operator Deployment" exactly once. Every other
@@ -109,10 +101,8 @@ func run(
 		return fmt.Errorf("%w -- refusing to overwrite %s with an ambiguous chart", err, outputDir)
 	}
 
-	// Group resources by GVK, skip Namespaces
 	groups := groupByGVK(resources)
 
-	// Extract defaults from the resolved operator Deployment
 	values, err := ExtractDefaults(operatorDeployment, resources)
 	if err != nil {
 		return fmt.Errorf("extracting default values: %w", err)
@@ -141,6 +131,12 @@ func run(
 		// same-named one regardless of what this check finds.)
 		operatorConfigMapName = ""
 	}
+	if err := validateConfigMapStableNames(resources, types.NamespacedName{
+		Name:      operatorConfigMapName,
+		Namespace: operatorDeployment.GetNamespace(),
+	}); err != nil {
+		return err
+	}
 	operatorConfigMapStableName := stripKustomizeConfigMapHash(operatorConfigMapName)
 
 	saName, saNamespace, err := OperatorServiceAccountRef(operatorDeployment)
@@ -163,13 +159,19 @@ func run(
 	saManaged := saName != "" && resourceExists(resources, gvk.ServiceAccount, saName, saNamespace)
 
 	chartCtx := chartContext{
-		operatorDeployment: resourceRef{name: operatorDeployment.GetName(), namespace: operatorDeployment.GetNamespace()},
-		operatorConfigMap: resourceRef{
-			name:      operatorConfigMapName,
-			namespace: operatorDeployment.GetNamespace(),
+		operatorDeployment: types.NamespacedName{
+			Name:      operatorDeployment.GetName(),
+			Namespace: operatorDeployment.GetNamespace(),
 		},
-		operatorConfigMapStableName:   operatorConfigMapStableName,
-		operatorServiceAccount:        resourceRef{name: saName, namespace: saNamespace},
+		operatorConfigMap: types.NamespacedName{
+			Name:      operatorConfigMapName,
+			Namespace: operatorDeployment.GetNamespace(),
+		},
+		operatorConfigMapStableName: operatorConfigMapStableName,
+		operatorServiceAccount: types.NamespacedName{
+			Name:      saName,
+			Namespace: saNamespace,
+		},
 		operatorServiceAccountManaged: saManaged,
 	}
 
@@ -291,34 +293,8 @@ func renderResourceGroups(
 	return renderedTemplates, renderedCRDs, nil
 }
 
-// publishPath moves name from stagingDir into outputDir, replacing whatever
-// is currently at outputDir/name. It never does a plain "remove destination,
-// then rename source into place": between those two steps outputDir/name
-// would not exist at all, which is exactly the destructive window this
-// function exists to close. Instead it renames the existing
-// outputDir/name (if any) to a backup path first, renames the staged
-// replacement into place, and only then removes the backup -- so at every
-// point outputDir/name is either the old content or the new content, never
-// neither, for anything short of a crash landing in the handful of
-// instructions between the two rename() syscalls (no I/O happens in
-// between). If the second rename fails, the backup is restored so the net
-// effect of a failed publishPath call is "nothing changed", not "the old
-// content is gone".
-//
-// If a *previous* run was killed in exactly that window, outputDir/name is
-// missing and its backup is still sitting there -- self-heal by restoring
-// it before doing anything else. This must happen before the unconditional
-// "clear the backup slot" step below, not after: clearing first and
-// recovering second (an earlier version of this function did exactly that)
-// destroys the one copy that recovery needed.
-//
-// This does not make the *set* of three publishPath calls in run() a single
-// transaction -- a crash between publishing values.yaml and publishing the
-// templates directory can still leave a values.yaml newer than the
-// templates next to it. Making that fully transactional would need a
-// manifest/lockfile scheme disproportionate to a developer-run code
-// generation step; per-artifact atomicity (recoverable even across process
-// restarts) is what this actually defends against.
+// publishPath replaces one artifact through a backup rename and restores that backup after a failed publish.
+// Each artifact is atomic; run() does not publish the complete chart as one transaction.
 func publishPath(stagingDir, outputDir, name string) error {
 	src := filepath.Join(stagingDir, name)
 	dst := filepath.Join(outputDir, name)
@@ -435,25 +411,34 @@ func stripKustomizeConfigMapHash(name string) string {
 	return name[:separator]
 }
 
-func validateConfigMapStableNames(resources []unstructured.Unstructured) error {
-	originalNamesByStableName := make(map[string]string)
+func validateConfigMapStableNames(
+	resources []unstructured.Unstructured,
+	operatorConfigMap types.NamespacedName,
+) error {
+	originalIdentitiesByEmittedName := make(map[string]types.NamespacedName)
 	for i := range resources {
 		resource := &resources[i]
 		if resource.GroupVersionKind() != gvk.ConfigMap {
 			continue
 		}
 
-		originalName := resource.GetName()
-		stableName := stripKustomizeConfigMapHash(originalName)
-		if previousName, found := originalNamesByStableName[stableName]; found && previousName != originalName {
+		originalIdentity := types.NamespacedName{
+			Name:      resource.GetName(),
+			Namespace: resource.GetNamespace(),
+		}
+		emittedName := originalIdentity.Name
+		if originalIdentity == operatorConfigMap {
+			emittedName = stripKustomizeConfigMapHash(emittedName)
+		}
+		if previousIdentity, found := originalIdentitiesByEmittedName[emittedName]; found {
 			return fmt.Errorf(
-				"ConfigMap name collision: %q and %q both resolve to stable name %q",
-				previousName,
-				originalName,
-				stableName,
+				"ConfigMap name collision: %s and %s both emit as %q in the chart namespace",
+				previousIdentity,
+				originalIdentity,
+				emittedName,
 			)
 		}
-		originalNamesByStableName[stableName] = originalName
+		originalIdentitiesByEmittedName[emittedName] = originalIdentity
 	}
 
 	return nil

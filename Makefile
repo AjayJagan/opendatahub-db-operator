@@ -149,7 +149,9 @@ test-e2e-context-check:
 	fi
 
 .PHONY: test-e2e
-test-e2e: test-e2e-setup test-e2e-run ## Set up and run e2e tests.
+test-e2e: ## Set up and run e2e tests.
+	$(MAKE) test-e2e-setup
+	$(MAKE) test-e2e-run
 
 ##@ Build
 
@@ -191,19 +193,15 @@ E2E_RELEASE   ?= opendatahub-db-operator-e2e
 
 .PHONY: container-load-kind
 container-load-kind: ## Load $(IMG) into a Kind cluster. `kind load docker-image` doesn't work with the podman provider.
-	tmp="$$(mktemp)"; \
-	$(CONTAINER_TOOL) save "$(IMG)" -o "$$tmp.tar" && \
-	$(KIND) load image-archive "$$tmp.tar" --name "$(KIND_CLUSTER)" && \
-	rm -f "$$tmp.tar"
+	tmp="$$(mktemp)"; trap 'rm -f "$$tmp" "$$tmp.tar"' EXIT; \
+	$(CONTAINER_TOOL) save "$(IMG)" -o "$$tmp.tar"; \
+	$(KIND) load image-archive "$$tmp.tar" --name "$(KIND_CLUSTER)"
 
 ##@ Helm
 
 .PHONY: helm
 helm: manifests generate ## Generate and lint the Helm chart from kustomize output via chartgen.
-	# chartgen itself only replaces config/chart's contents after fully
-	# rendering and validating the new chart (see run() in
-	# cmd/chartgen/chartgen.go) -- deleting the directory upfront here would
-	# defeat that: a failed run would still leave config/chart empty/gone.
+	# Chartgen stages output before replacing chart artifacts; do not delete config/chart before running it.
 	$(KUSTOMIZE) build config/default | go run ./cmd/main.go chartgen --output config/chart
 	$(HELM) lint config/chart
 
