@@ -1,0 +1,211 @@
+/*
+Copyright 2026.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package postgres
+
+import (
+	"fmt"
+	"net"
+	"net/url"
+	"reflect"
+	"strconv"
+
+	"github.com/go-viper/mapstructure/v2"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// Secret key names for connection parameters. Bare (undotted) keys rather than
+// PostgreSQL's PGXXX env-var names, so the Secret can be safely projected with
+// Kubernetes envFrom (EnvFromSource silently drops keys containing a period).
+const (
+	SecretKeyHost     = "host"
+	SecretKeyPort     = "port"
+	SecretKeyUser     = "user"
+	SecretKeyPassword = "password"
+	SecretKeyDatabase = "dbname"
+	SecretKeySchema   = "schema"
+	// SecretKeyCA holds PEM-encoded CA data used to verify the server
+	// certificate when sslmode is verify-ca or verify-full.
+	SecretKeyCA = "ca.crt"
+	// SecretKeySSLMode holds the libpq sslmode value (e.g. "disable", "require",
+	// "verify-full"). Optional in the Secret; when absent, callers apply their own
+	// default ("disable" for embedded, "require" for external).
+	SecretKeySSLMode = "sslmode"
+
+	// DefaultPort is the standard PostgreSQL port, used when port is absent.
+	DefaultPort          = 5432
+	DefaultAdminDatabase = "postgres"
+
+	// SSLMode* are the libpq sslmode values accepted by sslmode.
+	SSLModeDisable    = "disable"
+	SSLModeRequire    = "require"
+	SSLModeVerifyCA   = "verify-ca"
+	SSLModeVerifyFull = "verify-full"
+)
+
+// Config holds the connection parameters parsed from or written to a Kubernetes
+// Secret (docs/plan.md §6). The bare-key convention keeps the Secret
+// envFrom-safe. The mapstructure tags match the SecretKey*
+// constants above. Schema and SSLMode are optional.
+type Config struct {
+	Host     string `mapstructure:"host"`
+	Port     int    `mapstructure:"port"`
+	User     string `mapstructure:"user"`
+	Password string `mapstructure:"password"`
+	DBName   string `mapstructure:"dbname"`
+	Schema   string `mapstructure:"schema"`
+	// SSLRootCert stores PEM-encoded CA content from SecretKeyCA. Runtime
+	// helpers build the pgx TLS configuration directly from this content.
+	SSLRootCert string `mapstructure:"ca.crt"`
+	SSLMode     string `mapstructure:"sslmode"`
+}
+
+// TLSEnabled reports whether the connection should use TLS.
+func (c Config) TLSEnabled() bool {
+	return c.SSLMode != "" && c.SSLMode != SSLModeDisable
+}
+
+// TLSReady reports whether the config includes the trust material required by
+// the selected sslmode.
+func (c Config) TLSReady() bool {
+	switch c.SSLMode {
+	case SSLModeVerifyCA, SSLModeVerifyFull:
+		return c.SSLRootCert != ""
+	case "", SSLModeDisable:
+		return false
+	default:
+		return true
+	}
+}
+
+type secretField struct {
+	value string
+	key   string
+}
+
+func (c Config) validate(requireDatabase bool) error {
+	for _, field := range [...]secretField{
+		{c.Host, SecretKeyHost},
+		{c.User, SecretKeyUser},
+		{c.Password, SecretKeyPassword},
+	} {
+		if field.value == "" {
+			return fmt.Errorf("missing or empty key %q in Secret", field.key)
+		}
+	}
+	if requireDatabase && c.DBName == "" {
+		return fmt.Errorf("missing or empty key %q in Secret", SecretKeyDatabase)
+	}
+	if c.Port <= 0 || c.Port > 65535 {
+		return fmt.Errorf("invalid %s: must be a port number 1-65535, got %d", SecretKeyPort, c.Port)
+	}
+	return nil
+}
+
+// Validate checks that all required Config fields are set and the port is valid.
+func (c Config) Validate() error {
+	return c.validate(true)
+}
+
+// ValidateWithoutDatabase checks that all required Config fields except the
+// database name are set. Use this only for provider/admin secret loading paths
+// that resolve the effective database from higher-level config.
+func (c Config) ValidateWithoutDatabase() error {
+	return c.validate(false)
+}
+
+// ParseSecret decodes a Secret's data map ([]byte values) into a Config using
+// mapstructure. The inline hook promotes []byte -> string first so that
+// WeaklyTypedInput can then handle string -> int for PGPORT. PGPORT defaults to
+// DefaultPort when absent.
+func parseSecret(data map[string][]byte, requireDatabase bool) (Config, error) {
+	cfg := Config{Port: DefaultPort}
+
+	dec, err := mapstructure.NewDecoder(&mapstructure.DecoderConfig{
+		Result:           &cfg,
+		WeaklyTypedInput: true, // converts string "5432" -> int
+		TagName:          "mapstructure",
+		DecodeHook: mapstructure.ComposeDecodeHookFunc(
+			func(f reflect.Type, _ reflect.Type, v any) (any, error) {
+				if f == reflect.TypeFor[[]byte]() {
+					return string(v.([]byte)), nil
+				}
+				return v, nil
+			},
+		),
+	})
+	if err != nil {
+		return cfg, fmt.Errorf("building decoder: %w", err)
+	}
+	if err := dec.Decode(data); err != nil {
+		return cfg, fmt.Errorf("decoding Secret fields: %w", err)
+	}
+
+	if requireDatabase {
+		return cfg, cfg.Validate()
+	}
+	return cfg, cfg.ValidateWithoutDatabase()
+}
+
+func ParseSecret(data map[string][]byte) (Config, error) {
+	return parseSecret(data, true)
+}
+
+// ParseAdminSecret decodes a provider/admin Secret that may intentionally omit
+// dbname. Use this only when another config source will provide the
+// effective database before the returned config is used.
+func ParseAdminSecret(data map[string][]byte) (Config, error) {
+	return parseSecret(data, false)
+}
+
+// ConfigFromDSN parses a libpq or postgres:// DSN into a Config using
+// pgxpool's own parser -- no manual URL decomposition needed. Useful in tests
+// where the DSN comes from a testcontainers ConnectionString() call.
+func ConfigFromDSN(dsn string) (Config, error) {
+	pcfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		return Config{}, fmt.Errorf("parsing DSN: %w", err)
+	}
+	// pgx does not expose the raw sslmode string after parsing, so extract it
+	// directly from the URL query string.
+	sslMode := ""
+	if u, err := url.Parse(dsn); err == nil {
+		sslMode = u.Query().Get("sslmode")
+	}
+	return Config{
+		Host:     pcfg.ConnConfig.Host,
+		Port:     int(pcfg.ConnConfig.Port),
+		User:     pcfg.ConnConfig.User,
+		Password: pcfg.ConnConfig.Password,
+		DBName:   pcfg.ConnConfig.Database,
+		SSLMode:  sslMode,
+	}, nil
+}
+
+// DSN returns the libpq-style connection string for the config.
+func (c Config) DSN() string {
+	q := url.Values{}
+	if c.SSLMode != "" {
+		q.Set("sslmode", c.SSLMode)
+	}
+	return (&url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(c.User, c.Password),
+		Host:     net.JoinHostPort(c.Host, strconv.Itoa(c.Port)),
+		Path:     c.DBName,
+		RawQuery: q.Encode(),
+	}).String()
+}
