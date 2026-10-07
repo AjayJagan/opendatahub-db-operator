@@ -72,7 +72,6 @@ func (c *pgxClient) Close() {
 	c.pool = nil
 }
 
-// Ping verifies that the open client can reach the server.
 func (c *pgxClient) Ping(ctx context.Context) error {
 	if c == nil || c.pool == nil {
 		return fmt.Errorf("postgres client is not open")
@@ -81,7 +80,6 @@ func (c *pgxClient) Ping(ctx context.Context) error {
 	return sanitize(c.pool.Ping(ctx), c.config.Password)
 }
 
-// Exec executes a statement through the owned pool.
 func (c *pgxClient) Exec(
 	ctx context.Context,
 	sql string,
@@ -94,7 +92,6 @@ func (c *pgxClient) Exec(
 	return c.pool.Exec(ctx, sql, args...)
 }
 
-// Query executes a multi-row query through the owned pool.
 func (c *pgxClient) Query(
 	ctx context.Context,
 	sql string,
@@ -107,7 +104,6 @@ func (c *pgxClient) Query(
 	return c.pool.Query(ctx, sql, args...)
 }
 
-// QueryRow executes a single-row query through the owned pool.
 func (c *pgxClient) QueryRow(
 	ctx context.Context,
 	sql string,

@@ -29,7 +29,6 @@ const (
 	// AccessModeReadWrite grants full read/write privileges (the default).
 	AccessModeReadWrite AccessMode = "ReadWrite"
 
-	// AccessModeReadOnly grants read-only privileges.
 	AccessModeReadOnly AccessMode = "ReadOnly"
 )
 

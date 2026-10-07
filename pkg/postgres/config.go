@@ -73,7 +73,6 @@ type Config struct {
 	SSLMode     string `mapstructure:"sslmode"`
 }
 
-// TLSEnabled reports whether the connection should use TLS.
 func (c Config) TLSEnabled() bool {
 	return c.SSLMode != "" && c.SSLMode != SSLModeDisable
 }

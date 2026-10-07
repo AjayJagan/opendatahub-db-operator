@@ -331,7 +331,6 @@ func DatabaseExists(ctx context.Context, cli Client, name string) (bool, error) 
 	return exists, err
 }
 
-// SchemaExists returns true if a schema with the given name exists.
 func SchemaExists(ctx context.Context, cli Client, name string) (bool, error) {
 	row, err := cli.QueryRow(ctx, sqlSchemaExists, name)
 	if err != nil {
@@ -343,7 +342,6 @@ func SchemaExists(ctx context.Context, cli Client, name string) (bool, error) {
 	return exists, err
 }
 
-// RoleExists returns true if a PostgreSQL role with the given name exists.
 func RoleExists(ctx context.Context, cli Client, name string) (bool, error) {
 	row, err := cli.QueryRow(ctx,
 		"SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)", name,

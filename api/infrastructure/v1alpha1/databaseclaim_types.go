@@ -25,7 +25,6 @@ import (
 )
 
 const (
-	// DatabaseClaimKind is the Kubernetes kind string.
 	DatabaseClaimKind = "DatabaseClaim"
 
 	DatabaseClaimResource = "databaseclaims"

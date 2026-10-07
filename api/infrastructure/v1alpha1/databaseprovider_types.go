@@ -26,7 +26,6 @@ import (
 )
 
 const (
-	// DatabaseProviderKind is the Kubernetes kind string.
 	DatabaseProviderKind = "DatabaseProvider"
 
 	DatabaseProviderResource = "databaseproviders"
@@ -72,7 +71,6 @@ type ExternalProviderSpec struct {
 	Capabilities []ExternalCapability `json:"capabilities,omitempty"`
 }
 
-// CertManagerIssuerRef identifies a cert-manager issuer resource.
 type CertManagerIssuerRef struct {
 	// Name is the metadata.name of the referenced issuer.
 	// +kubebuilder:validation:Required
@@ -172,7 +170,6 @@ type InternalProviderSpec struct {
 	Extensions []string `json:"extensions,omitempty"`
 }
 
-// ProviderTLSStatus reports the resolved TLS state for a DatabaseProvider.
 type ProviderTLSStatus struct {
 	// Enabled reflects whether TLS is configured for this provider.
 	Enabled bool `json:"enabled"`

@@ -45,7 +45,6 @@ func TestDDL_CreateDropSchema(t *testing.T) {
 	ctx := t.Context()
 	pool := openPool(t, cfg)
 
-	// First call creates the schema
 	g.Expect(postgres.CreateSchema(ctx, pool, "myschema")).To(Succeed())
 	// Second call is idempotent
 	g.Expect(postgres.CreateSchema(ctx, pool, "myschema")).To(Succeed())
@@ -55,7 +54,6 @@ func TestDDL_CreateDropSchema(t *testing.T) {
 	g.Expect(postgres.DropSchemaCascade(ctx, pool, "myschema")).To(Succeed())
 }
 
-// TestDDL_CreateDropRole verifies role creation and deletion.
 func TestDDL_EnsureDropRole(t *testing.T) {
 	g := NewWithT(t)
 	cfg := startPostgres(t)
@@ -112,7 +110,6 @@ func TestDDL_GrantSchemaPrivileges(t *testing.T) {
 			schema := "priv_" + tc.name
 			role := "role_" + tc.name
 
-			// Per-subtest schema with a single row
 			g.Expect(postgres.CreateSchema(ctx, pool, schema)).To(Succeed())
 			t.Cleanup(func() { _ = postgres.DropSchemaCascade(ctx, pool, schema) })
 			_, err := pool.Exec(ctx, fmt.Sprintf("CREATE TABLE %s.t (id int)", postgres.QuoteIdentifier(schema)))

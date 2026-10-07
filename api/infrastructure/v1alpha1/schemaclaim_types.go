@@ -24,7 +24,6 @@ import (
 )
 
 const (
-	// SchemaClaimKind is the Kubernetes kind string.
 	SchemaClaimKind = "SchemaClaim"
 
 	SchemaClaimResource = "schemaclaims"
