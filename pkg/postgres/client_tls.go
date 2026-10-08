@@ -89,6 +89,7 @@ func runtimeTLSConfig(
 
 	switch mode {
 	case SSLModeVerifyCA:
+		// nosemgrep: go-tls-bypass -- verify-ca skips hostname check; verifyCertificateChain below does real CA validation.
 		tlsConfig.InsecureSkipVerify = true
 		tlsConfig.VerifyPeerCertificate = verifyCertificateChain(tlsConfig)
 	case SSLModeVerifyFull:
