@@ -57,6 +57,8 @@ const (
 	KeyPlatformType    = "platformType"
 	KeyPlatformVersion = "platformVersion"
 
+	OperatorConfigMapName = "odh-databaseservice-config"
+
 	KeyMetricsBindAddr    = "controller.metrics.bind-address"
 	KeyHealthBindAddr     = "controller.health.bind-address"
 	KeyLeaderElectEnabled = "controller.leader-election.enabled"
