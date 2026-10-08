@@ -23,6 +23,8 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+
+	"github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
 )
 
 const deploymentAndRoleBindingManifest = `
@@ -606,6 +608,7 @@ func TestRun_OnlyTemplatesOperatorConfigMap(t *testing.T) {
 
 	g.Expect(rendered).To(ContainSubstring("platformType: {{"))
 	g.Expect(rendered).To(ContainSubstring(`if and (ne $key "platformType") (ne $key "platformVersion")`))
+	g.Expect(rendered).To(ContainSubstring("name: " + config.OperatorConfigMapName))
 	g.Expect(rendered).To(ContainSubstring("foo: bar"))
 	g.Expect(rendered).NotTo(ContainSubstring("bar: {{"))
 }
@@ -624,25 +627,27 @@ func TestRun_UsesStableNameForKustomizeGeneratedOperatorConfigMap(t *testing.T) 
 	g.Expect(string(deployment)).To(ContainSubstring(
 		"checksum/config: {{ include (print $.Template.BasePath \"/core_v1_configmap.yaml\") . | sha256sum }}",
 	))
-	g.Expect(string(deployment)).To(ContainSubstring("name: config"))
+	g.Expect(string(deployment)).To(ContainSubstring("name: " + config.OperatorConfigMapName))
 	g.Expect(string(deployment)).NotTo(ContainSubstring(hashedConfigMapName))
 
 	configMap, err := os.ReadFile(filepath.Join(outputDir, templatesDirName, "core_v1_configmap.yaml"))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(string(configMap)).To(ContainSubstring("name: config"))
+	g.Expect(string(configMap)).To(ContainSubstring("name: " + config.OperatorConfigMapName))
 	g.Expect(string(configMap)).NotTo(ContainSubstring(hashedConfigMapName))
 }
 
 func TestRun_RejectsCollidingStableConfigMapNames(t *testing.T) {
 	g := NewWithT(t)
+	// A second ConfigMap already named the platform handshake name collides
+	// with the operator ConfigMap rewrite to odh-databaseservice-config.
 	manifest := deploymentWithHashedOperatorConfigMap("operator-config-1234567890")
-	manifest = strings.Replace(manifest, "name: unrelated-configmap\n", "name: operator-config\n", 1)
+	manifest = strings.Replace(manifest, "name: unrelated-configmap\n", "name: "+config.OperatorConfigMapName+"\n", 1)
 
 	err := run(strings.NewReader(manifest), t.TempDir(), "test", "0.1.0")
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(err.Error()).To(ContainSubstring("ConfigMap name collision"))
 	g.Expect(err.Error()).To(ContainSubstring("operator-config-1234567890"))
-	g.Expect(err.Error()).To(ContainSubstring("operator-config"))
+	g.Expect(err.Error()).To(ContainSubstring(config.OperatorConfigMapName))
 }
 
 func TestRun_RejectsConfigMapsWithSameEmittedNameAcrossNamespaces(t *testing.T) {

@@ -31,6 +31,7 @@ import (
 	utilyaml "k8s.io/apimachinery/pkg/util/yaml"
 	"sigs.k8s.io/yaml"
 
+	"github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/resources/gvk"
 )
 
@@ -73,6 +74,7 @@ Example:
 	return cmd
 }
 
+//nolint:gocyclo // orchestrates decode, validation, render, and atomic chart publish
 func run(
 	reader io.Reader,
 	outputDir string,
@@ -131,13 +133,16 @@ func run(
 		// same-named one regardless of what this check finds.)
 		operatorConfigMapName = ""
 	}
+	operatorConfigMapStableName := ""
+	if operatorConfigMapName != "" {
+		operatorConfigMapStableName = config.OperatorConfigMapName
+	}
 	if err := validateConfigMapStableNames(resources, types.NamespacedName{
 		Name:      operatorConfigMapName,
 		Namespace: operatorDeployment.GetNamespace(),
-	}); err != nil {
+	}, operatorConfigMapStableName); err != nil {
 		return err
 	}
-	operatorConfigMapStableName := stripKustomizeConfigMapHash(operatorConfigMapName)
 
 	saName, saNamespace, err := OperatorServiceAccountRef(operatorDeployment)
 	if err != nil {
@@ -414,6 +419,7 @@ func stripKustomizeConfigMapHash(name string) string {
 func validateConfigMapStableNames(
 	resources []unstructured.Unstructured,
 	operatorConfigMap types.NamespacedName,
+	operatorConfigMapStableName string,
 ) error {
 	originalIdentitiesByEmittedName := make(map[string]types.NamespacedName)
 	for i := range resources {
@@ -428,7 +434,11 @@ func validateConfigMapStableNames(
 		}
 		emittedName := originalIdentity.Name
 		if originalIdentity == operatorConfigMap {
-			emittedName = stripKustomizeConfigMapHash(emittedName)
+			if operatorConfigMapStableName != "" {
+				emittedName = operatorConfigMapStableName
+			} else {
+				emittedName = stripKustomizeConfigMapHash(emittedName)
+			}
 		}
 		if previousIdentity, found := originalIdentitiesByEmittedName[emittedName]; found {
 			return fmt.Errorf(

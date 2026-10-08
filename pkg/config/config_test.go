@@ -78,6 +78,14 @@ func TestLoad_PlatformType(t *testing.T) {
 	g.Expect(cfg.PlatformType).To(Equal(config.PlatformTypeSelfManagedRhoai))
 }
 
+func TestOperatorConfigMapName_MatchesPlatformHandshake(t *testing.T) {
+	g := NewWithT(t)
+	// ODH injectPlatformConfig writes odh-<moduleName>-config; module name is
+	// databaseservice. Chartgen must emit this exact name so platformVersion
+	// merges into the ConfigMap the manager mounts.
+	g.Expect(config.OperatorConfigMapName).To(Equal("odh-databaseservice-config"))
+}
+
 func TestComponentRelease(t *testing.T) {
 	g := NewWithT(t)
 
