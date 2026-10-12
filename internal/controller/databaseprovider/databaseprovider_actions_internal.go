@@ -18,12 +18,16 @@ package databaseprovider
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
 	api "github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	odherrors "github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/errors"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 	odhtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
+	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
 	dbcontroller "github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
 	pginstance "github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres/instance"
@@ -75,6 +79,13 @@ func (m *Controller) reconcileInternalAction(
 				conditions.WithMessage("TLS is not enabled for this internal provider"))
 		}
 
+		if errors.Is(err, errInternalAdminCredentialsLost) {
+			retryAfter := m.cfg.DatabaseProvider.RetryInterval
+			if retryAfter <= 0 {
+				retryAfter = moduleconfig.DefaultRetryInterval
+			}
+			return odherrors.NewStopErrorW(err).WithRequeueAfter(retryAfter)
+		}
 		return fmt.Errorf("ensuring internal admin Secret: %w", err)
 	}
 
@@ -155,6 +166,33 @@ func (m *Controller) internalReadinessAction(
 		rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse,
 			conditions.WithReason(reasonProvisioning),
 			conditions.WithMessage("Waiting for internal PostgreSQL StatefulSet to become ready"))
+		return nil
+	}
+	cfg, err := dbcontroller.LoadProviderConfig(ctx, rr.Client, obj, m.cfg.OperatorNamespace)
+	if err != nil {
+		rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse,
+			conditions.WithReason(reasonAdminSecretUnavailable),
+			conditions.WithMessagef("Loading internal admin Secret: %s", err))
+		return nil
+	}
+	factory := m.PostgresClientFactory
+	if factory == nil {
+		factory = postgres.DefaultClientFactory
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	pgClient, err := factory(probeCtx, cfg)
+	if err == nil {
+		defer pgClient.Close()
+		err = pgClient.Ping(probeCtx)
+	}
+	if err != nil {
+		rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse,
+			conditions.WithReason("AdminConnectionFailed"),
+			conditions.WithMessagef(
+				"Internal PostgreSQL admin connection failed: %s. Verify the admin Secret, TLS, and network access.",
+				postgres.SanitizeError(err, cfg.Password),
+			))
 		return nil
 	}
 

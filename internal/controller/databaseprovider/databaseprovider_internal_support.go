@@ -19,6 +19,7 @@ package databaseprovider
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -37,6 +38,8 @@ import (
 	pginstance "github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres/instance"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/resources/gvk"
 )
+
+var errInternalAdminCredentialsLost = errors.New("internal admin credentials lost")
 
 var (
 	stockExtensions = map[string]struct{}{
@@ -113,6 +116,7 @@ func resolveInternalData(
 			AdminSecretName: dbcontroller.InternalAdminSecretName(provider.Name),
 		},
 		Network: pginstance.NetworkPolicy{
+			OperatorNamespace: cfg.OperatorNamespace,
 			AllowedNamespaces: namespaces,
 		},
 		TLS: pginstance.TLS{
@@ -391,6 +395,19 @@ func computeInternalAdminSecret(
 
 	password := existing.Data[postgres.SecretKeyPassword]
 	if len(password) == 0 {
+		pvc := &corev1.PersistentVolumeClaim{}
+		pvc.Name = dbcontroller.InternalPVCName(provider.Name)
+		pvc.Namespace = existing.Namespace
+		if err := cli.Get(ctx, client.ObjectKeyFromObject(pvc), pvc); err == nil {
+			return res, fmt.Errorf(
+				"%w: restore Secret %s/%s with its original password, "+
+					"or reset the database admin password before recreating the Secret",
+				errInternalAdminCredentialsLost, existing.Namespace, existing.Name,
+			)
+		} else if !apierrors.IsNotFound(err) {
+			return res, fmt.Errorf("checking internal PostgreSQL storage: %w", err)
+		}
+
 		pwd, err := postgres.GeneratePassword(24)
 		if err != nil {
 			return res, fmt.Errorf("generating admin password: %w", err)

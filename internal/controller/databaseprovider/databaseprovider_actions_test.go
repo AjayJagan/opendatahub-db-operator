@@ -26,24 +26,22 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	. "github.com/onsi/gomega"
 	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	odherrors "github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/errors"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 	odhtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
 	dbcontroller "github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
-	"github.com/opendatahub-io/opendatahub-db-operator/pkg/resources/gvk"
 	configv1 "github.com/openshift/api/config/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
@@ -94,7 +92,7 @@ func TestReconcileExternalActionReportsInvalidSecretWithoutReturningError(t *tes
 	g.Expect(ready.Status).NotTo(Equal(metav1.ConditionTrue))
 }
 
-func TestReconcileExternalActionFollowsChangedTLSProfileAndReportsMissingCertManager(t *testing.T) {
+func TestReconcileExternalActionFollowsChangedTLSProfileWithoutCertManager(t *testing.T) {
 	g := NewWithT(t)
 	cli := testClient(t,
 		externalAdminSecret(),
@@ -152,36 +150,15 @@ func TestReconcileExternalActionFollowsChangedTLSProfileAndReportsMissingCertMan
 	g.Expect(reachable.Status).To(Equal(metav1.ConditionTrue))
 	version := conditions.FindStatusCondition(provider, ConditionServerVersion)
 	g.Expect(version.Status).To(Equal(metav1.ConditionTrue))
-	degraded := conditions.FindStatusCondition(provider, ConditionTLSConfiguration)
-	g.Expect(degraded.Status).To(Equal(metav1.ConditionFalse))
-	g.Expect(degraded.Reason).To(Equal("CertManagerUnavailable"))
-	g.Expect(degraded.Message).To(ContainSubstring("cert-manager"))
-
-	crds := &apiextensionsv1.CustomResourceDefinitionList{}
-	g.Expect(cli.List(context.Background(), crds)).To(Succeed())
-	g.Expect(crds.Items).To(BeEmpty())
+	tlsCondition := conditions.FindStatusCondition(provider, ConditionTLSConfiguration)
+	g.Expect(tlsCondition.Status).To(Equal(metav1.ConditionTrue))
+	g.Expect(tlsCondition.Reason).To(Equal(reasonTLSConfigured))
 }
 
 func TestReconcileExternalActionReportsUnsupportedTLSProfileCiphers(t *testing.T) {
 	g := NewWithT(t)
-	mapper := meta.NewDefaultRESTMapper([]schema.GroupVersion{gvk.CertManagerIssuer.GroupVersion()})
-	mapper.AddSpecific(
-		gvk.CertManagerIssuer,
-		gvk.CertManagerIssuer.GroupVersion().WithResource("issuers"),
-		gvk.CertManagerIssuer.GroupVersion().WithResource("issuer"),
-		meta.RESTScopeRoot,
-	)
-	mapper.AddSpecific(
-		gvk.CertManagerCertificate,
-		gvk.CertManagerCertificate.GroupVersion().WithResource("certificates"),
-		gvk.CertManagerCertificate.GroupVersion().WithResource("certificate"),
-		meta.RESTScopeRoot,
-	)
-	issuerCRD := &apiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: "issuers.cert-manager.io"}}
-	certificateCRD := &apiextensionsv1.CustomResourceDefinition{ObjectMeta: metav1.ObjectMeta{Name: "certificates.cert-manager.io"}}
 	cli := fake.NewClientBuilder().
 		WithScheme(testScheme(t)).
-		WithRESTMapper(mapper).
 		WithObjects(
 			externalAdminSecret(),
 			&configv1.APIServer{
@@ -194,8 +171,6 @@ func TestReconcileExternalActionReportsUnsupportedTLSProfileCiphers(t *testing.T
 					}},
 				}},
 			},
-			issuerCRD,
-			certificateCRD,
 		).
 		Build()
 	m := &Controller{Options: Options{PostgresClientFactory: func(_ context.Context, _ postgres.Config) (postgres.Client, error) {
@@ -211,7 +186,7 @@ func TestReconcileExternalActionReportsUnsupportedTLSProfileCiphers(t *testing.T
 	g.Expect(tlsCondition.Message).To(ContainSubstring("UNKNOWN-CIPHER-SENTINEL"))
 }
 
-func TestReconcileInternalActionNetworkPolicyAllowsOnlyProvisionedClaimNamespaces(t *testing.T) {
+func TestReconcileInternalActionNetworkPolicyAllowsOperatorAndProvisionedClaimNamespaces(t *testing.T) {
 	g := NewWithT(t)
 	provider := &infraApi.DatabaseProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "internal"},
@@ -257,7 +232,10 @@ func TestReconcileInternalActionNetworkPolicyAllowsOnlyProvisionedClaimNamespace
 	}}
 	cli := testClient(t, activeSchema, activeDatabase, duplicateNamespace, unprovisioned, otherProvider)
 	rr := testRequest(t, cli, provider)
-	m := &Controller{Options: Options{cfg: &moduleconfig.Config{Internal: moduleconfig.InternalConfig{PostgresImage: "postgres:16"}}}}
+	m := &Controller{Options: Options{cfg: &moduleconfig.Config{
+		OperatorNamespace: "operator-system",
+		Internal:          moduleconfig.InternalConfig{PostgresImage: "postgres:16"},
+	}}}
 
 	g.Expect(m.reconcileInternalAction(context.Background(), rr)).To(Succeed())
 	var policy *unstructured.Unstructured
@@ -274,14 +252,23 @@ func TestReconcileInternalActionNetworkPolicyAllowsOnlyProvisionedClaimNamespace
 	renderedPolicy := &networkingv1.NetworkPolicy{}
 	g.Expect(runtime.DefaultUnstructuredConverter.FromUnstructured(policy.Object, renderedPolicy)).To(Succeed())
 	g.Expect(renderedPolicy.Spec.Ingress).To(HaveLen(1))
-	g.Expect(renderedPolicy.Spec.Ingress[0].From).To(HaveLen(1))
-	selector := renderedPolicy.Spec.Ingress[0].From[0].NamespaceSelector
-	g.Expect(selector).NotTo(BeNil())
-	g.Expect(selector.MatchExpressions).To(ConsistOf(metav1.LabelSelectorRequirement{
-		Key:      "kubernetes.io/metadata.name",
-		Operator: metav1.LabelSelectorOpIn,
-		Values:   []string{"workload-a", "workload-z"},
-	}))
+	g.Expect(renderedPolicy.Spec.Ingress[0].From).To(ConsistOf(
+		networkingv1.NetworkPolicyPeer{
+			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+				"kubernetes.io/metadata.name": "operator-system",
+			}},
+			PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{
+				"app.kubernetes.io/name": "opendatahub-db-operator",
+			}},
+		},
+		networkingv1.NetworkPolicyPeer{
+			NamespaceSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+				Key:      "kubernetes.io/metadata.name",
+				Operator: metav1.LabelSelectorOpIn,
+				Values:   []string{"workload-a", "workload-z"},
+			}}},
+		},
+	))
 }
 
 func TestReconcileInternalActionDefaultsPostgresResources(t *testing.T) {
@@ -461,8 +448,23 @@ func TestInternalReadinessRequiresExactlyOneReadyReplica(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "internal", Namespace: "database-system"},
 				Status:     appsv1.StatefulSetStatus{ReadyReplicas: readyReplicas},
 			}
-			cli := testClient(t, sts)
-			m := &Controller{Options: Options{cfg: &moduleconfig.Config{}}}
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{Name: "internal-admin", Namespace: "database-system"},
+				Data: map[string][]byte{
+					postgres.SecretKeyHost:     []byte("internal.database-system.svc"),
+					postgres.SecretKeyPort:     []byte("5432"),
+					postgres.SecretKeyUser:     []byte("postgres"),
+					postgres.SecretKeyPassword: []byte("original-password"),
+					postgres.SecretKeyDatabase: []byte("postgres"),
+				},
+			}
+			cli := testClient(t, sts, secret)
+			m := &Controller{Options: Options{
+				cfg: &moduleconfig.Config{},
+				PostgresClientFactory: func(_ context.Context, _ postgres.Config) (postgres.Client, error) {
+					return &fakePostgresClient{}, nil
+				},
+			}}
 			rr := testRequest(t, cli, provider)
 			rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionTrue)
 
@@ -482,6 +484,78 @@ func TestInternalReadinessRequiresExactlyOneReadyReplica(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestInternalReadinessRejectsUnusableAdminSecret(t *testing.T) {
+	g := NewWithT(t)
+	provider := &infraApi.DatabaseProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "internal"},
+		Spec: infraApi.DatabaseProviderSpec{
+			Type:     infraApi.ProviderTypeInternal,
+			Internal: &infraApi.InternalProviderSpec{Namespace: "database-system"},
+		},
+	}
+	sts := &appsv1.StatefulSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "internal", Namespace: "database-system"},
+		Status:     appsv1.StatefulSetStatus{ReadyReplicas: 1},
+	}
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: "internal-admin", Namespace: "database-system"},
+		Data: map[string][]byte{
+			postgres.SecretKeyHost:     []byte("internal.database-system.svc"),
+			postgres.SecretKeyPort:     []byte("5432"),
+			postgres.SecretKeyUser:     []byte("postgres"),
+			postgres.SecretKeyPassword: []byte("new-password"),
+			postgres.SecretKeyDatabase: []byte("postgres"),
+		},
+	}
+	cli := testClient(t, sts, secret)
+	m := &Controller{Options: Options{
+		cfg: &moduleconfig.Config{},
+		PostgresClientFactory: func(_ context.Context, _ postgres.Config) (postgres.Client, error) {
+			return &fakePostgresClient{pingErr: errors.New("authentication failed for new-password")}, nil
+		},
+	}}
+	rr := testRequest(t, cli, provider)
+	rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionTrue)
+
+	g.Expect(m.internalReadinessAction(context.Background(), rr)).To(Succeed())
+	reachable := conditions.FindStatusCondition(provider, ConditionReachable)
+	g.Expect(reachable.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(reachable.Reason).To(Equal("AdminConnectionFailed"))
+	g.Expect(reachable.Message).To(ContainSubstring("[redacted]"))
+	g.Expect(reachable.Message).NotTo(ContainSubstring("new-password"))
+	ready := conditions.FindStatusCondition(provider, string(fwapi.ConditionTypeReady))
+	g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
+}
+
+func TestReconcileInternalActionDoesNotReplaceLostAdminCredentials(t *testing.T) {
+	g := NewWithT(t)
+	provider := &infraApi.DatabaseProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "internal"},
+		Spec: infraApi.DatabaseProviderSpec{
+			Type:     infraApi.ProviderTypeInternal,
+			Internal: &infraApi.InternalProviderSpec{Namespace: "database-system"},
+		},
+	}
+	pvc := &corev1.PersistentVolumeClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "internal", Namespace: "database-system"},
+	}
+	cli := testClient(t, pvc)
+	rr := testRequest(t, cli, provider)
+	m := &Controller{Options: Options{cfg: &moduleconfig.Config{}}}
+
+	err := m.reconcileInternalAction(context.Background(), rr)
+	var stop odherrors.StopError
+	g.Expect(errors.As(err, &stop)).To(BeTrue())
+	g.Expect(stop.RequeueAfter()).To(Equal(moduleconfig.DefaultRetryInterval))
+	g.Expect(rr.Resources).To(BeEmpty())
+	reachable := conditions.FindStatusCondition(provider, ConditionReachable)
+	g.Expect(reachable.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(reachable.Reason).To(Equal(reasonAdminSecretUnavailable))
+	g.Expect(reachable.Message).To(ContainSubstring("restore Secret database-system/internal-admin"))
+	ready := conditions.FindStatusCondition(provider, string(fwapi.ConditionTypeReady))
+	g.Expect(ready.Status).To(Equal(metav1.ConditionFalse))
 }
 
 func TestReconcileInternalActionReportsMissingCertManager(t *testing.T) {

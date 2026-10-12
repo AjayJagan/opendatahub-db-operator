@@ -61,7 +61,6 @@ func (m *Controller) reconcileExternalAction(ctx context.Context, rr *odhtypes.R
 	}
 	obj.Status.Connection = providerConnectionStatus(cfg)
 	obj.Status.TLS = &infraApi.ProviderTLSStatus{Enabled: cfg.TLSEnabled(), Ready: cfg.TLSReady()}
-	certManagerMissing := false
 	unsupportedCiphers := []string(nil)
 	if cfg.TLSEnabled() {
 		profile, err := platformtls.Load(ctx, rr.Client)
@@ -71,13 +70,6 @@ func (m *Controller) reconcileExternalAction(ctx context.Context, rr *odhtypes.R
 		mutator, unsupported := platformtls.ConfigFromProfile(profile.Spec)
 		cfg.TLSConfigMutator = mutator
 		unsupportedCiphers = unsupported
-		available, err := dbcontroller.CertManagerAvailable(ctx, rr.Client)
-		if err != nil {
-			return fmt.Errorf("checking cert-manager availability: %w", err)
-		}
-		if !available {
-			certManagerMissing = true
-		}
 	}
 	switch {
 	case !cfg.TLSEnabled():
@@ -90,9 +82,6 @@ func (m *Controller) reconcileExternalAction(ctx context.Context, rr *odhtypes.R
 		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionTrue, conditions.WithReason(reasonTLSConfigured), conditions.WithMessage(message))
 	default:
 		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse, conditions.WithReason(reasonTLSProvisioning), conditions.WithMessage("External provider TLS configuration is pending"))
-	}
-	if certManagerMissing {
-		dbcontroller.MarkCertManagerMissing(rr)
 	}
 	factory := m.PostgresClientFactory
 	if factory == nil {

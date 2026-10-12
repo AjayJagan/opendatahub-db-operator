@@ -59,6 +59,7 @@ type Postgres struct {
 }
 
 type NetworkPolicy struct {
+	OperatorNamespace string
 	AllowedNamespaces []string
 }
 

@@ -13,12 +13,21 @@ spec:
       app.kubernetes.io/name: {{.Service.Name}}
   policyTypes:
     - Ingress
-{{- if gt (len .Network.AllowedNamespaces) 0 }}
+{{- if or .Network.OperatorNamespace (gt (len .Network.AllowedNamespaces) 0) }}
   ingress:
     - ports:
         - port: 5432
           protocol: TCP
       from:
+{{- if .Network.OperatorNamespace }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Network.OperatorNamespace }}
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: opendatahub-db-operator
+{{- end }}
+{{- if gt (len .Network.AllowedNamespaces) 0 }}
         - namespaceSelector:
             matchExpressions:
               - key: kubernetes.io/metadata.name
@@ -26,6 +35,7 @@ spec:
                 values:
 {{- range .Network.AllowedNamespaces }}
                   - {{ . }}
+{{- end }}
 {{- end }}
 {{- else }}
   ingress: []

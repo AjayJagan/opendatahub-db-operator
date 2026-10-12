@@ -8,9 +8,9 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-func TestResources_EmptyClaimNamespacesDenyIngress(t *testing.T) {
+func TestResources_EmptyClaimNamespacesAllowOnlyOperator(t *testing.T) {
 	g := NewWithT(t)
-	policy := renderNetworkPolicy(t, nil)
+	policy := renderNetworkPolicy(t, "operator-system", nil)
 	if policy == nil {
 		return
 	}
@@ -18,16 +18,45 @@ func TestResources_EmptyClaimNamespacesDenyIngress(t *testing.T) {
 	ingress, found, err := unstructured.NestedSlice(policy.Object, "spec", "ingress")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(found).To(BeTrue())
-	g.Expect(ingress).To(BeEmpty())
+	g.Expect(ingress).To(HaveLen(1))
+	rule, ok := ingress[0].(map[string]any)
+	g.Expect(ok).To(BeTrue())
+	if !ok {
+		return
+	}
+	from, found, err := unstructured.NestedSlice(rule, "from")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(from).To(HaveLen(1))
+	if !found || len(from) != 1 {
+		return
+	}
+	operatorPeer, ok := from[0].(map[string]any)
+	g.Expect(ok).To(BeTrue())
+	if !ok {
+		return
+	}
+	operatorNamespace, found, err := unstructured.NestedString(
+		operatorPeer, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name",
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(operatorNamespace).To(Equal("operator-system"))
+	operatorLabel, found, err := unstructured.NestedString(
+		operatorPeer, "podSelector", "matchLabels", "app.kubernetes.io/name",
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(operatorLabel).To(Equal("opendatahub-db-operator"))
 	policyTypes, found, err := unstructured.NestedStringSlice(policy.Object, "spec", "policyTypes")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(found).To(BeTrue())
 	g.Expect(policyTypes).To(Equal([]string{"Ingress"}))
 }
 
-func TestResources_ActiveClaimNamespacesAllowOnlyThoseNamespaces(t *testing.T) {
+func TestResources_ActiveClaimNamespacesAllowOperatorAndClaimNamespaces(t *testing.T) {
 	g := NewWithT(t)
-	policy := renderNetworkPolicy(t, []string{"one", "two"})
+	policy := renderNetworkPolicy(t, "operator-system", []string{"one", "two"})
 	if policy == nil {
 		return
 	}
@@ -47,11 +76,23 @@ func TestResources_ActiveClaimNamespacesAllowOnlyThoseNamespaces(t *testing.T) {
 	from, found, err := unstructured.NestedSlice(rule, "from")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(found).To(BeTrue())
-	g.Expect(from).To(HaveLen(1))
-	if !found || len(from) != 1 {
+	g.Expect(from).To(HaveLen(2))
+	if !found || len(from) != 2 {
 		return
 	}
-	peer, ok := from[0].(map[string]any)
+	operatorPeer, ok := from[0].(map[string]any)
+	g.Expect(ok).To(BeTrue())
+	if !ok {
+		return
+	}
+	operatorNamespace, found, err := unstructured.NestedString(
+		operatorPeer, "namespaceSelector", "matchLabels", "kubernetes.io/metadata.name",
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(operatorNamespace).To(Equal("operator-system"))
+
+	peer, ok := from[1].(map[string]any)
 	g.Expect(ok).To(BeTrue())
 	if !ok {
 		return
@@ -80,7 +121,24 @@ func TestResources_ActiveClaimNamespacesAllowOnlyThoseNamespaces(t *testing.T) {
 	g.Expect(values).To(Equal([]string{"one", "two"}))
 }
 
-func renderNetworkPolicy(t *testing.T, allowedNamespaces []string) *unstructured.Unstructured {
+func TestResources_NoAllowedSourcesDenyIngress(t *testing.T) {
+	g := NewWithT(t)
+	policy := renderNetworkPolicy(t, "", nil)
+	if policy == nil {
+		return
+	}
+
+	ingress, found, err := unstructured.NestedSlice(policy.Object, "spec", "ingress")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(found).To(BeTrue())
+	g.Expect(ingress).To(BeEmpty())
+}
+
+func renderNetworkPolicy(
+	t *testing.T,
+	operatorNamespace string,
+	allowedNamespaces []string,
+) *unstructured.Unstructured {
 	t.Helper()
 	g := NewWithT(t)
 	resources, err := Resources(context.Background(), Data{
@@ -90,7 +148,7 @@ func renderNetworkPolicy(t *testing.T, allowedNamespaces []string) *unstructured
 		PVC:          PVC{Name: "provider", Size: "1Gi"},
 		InitDB:       InitDB{ConfigMapName: "provider-initdb"},
 		Postgres:     Postgres{Image: "postgres:16", AdminSecretName: "provider-admin", DefaultDatabase: "postgres"},
-		Network:      NetworkPolicy{AllowedNamespaces: allowedNamespaces},
+		Network:      NetworkPolicy{OperatorNamespace: operatorNamespace, AllowedNamespaces: allowedNamespaces},
 	})
 	g.Expect(err).NotTo(HaveOccurred())
 	if err != nil {
