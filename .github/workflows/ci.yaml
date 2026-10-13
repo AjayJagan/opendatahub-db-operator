@@ -150,7 +150,7 @@ jobs:
           ClusterRole/odh-db-operator-metrics-reader
           ClusterRoleBinding/odh-db-operator-manager-rolebinding
           ClusterRoleBinding/odh-db-operator-metrics-auth-rolebinding
-          ConfigMap/odh-db-operator-config
+          ConfigMap/odh-databaseservice-config
           CustomResourceDefinition/databaseservices.services.platform.opendatahub.io
           Deployment/odh-db-operator-operator
           Role/odh-db-operator-leader-election-role

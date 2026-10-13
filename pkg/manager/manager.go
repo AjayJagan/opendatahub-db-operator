@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
+	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	servicesv1alpha1 "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
 	"github.com/opendatahub-io/opendatahub-db-operator/internal/controller/databaseservice"
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
@@ -48,6 +49,9 @@ func NewScheme() (*runtime.Scheme, error) {
 	}
 	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("adding apiextensions scheme: %w", err)
+	}
+	if err := infraApi.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("adding infrastructure scheme: %w", err)
 	}
 	if err := servicesv1alpha1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("adding services scheme: %w", err)

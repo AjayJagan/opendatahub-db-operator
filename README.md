@@ -1,28 +1,22 @@
 # opendatahub-db-operator
 
-This repository implements the `opendatahub-db-operator` module operator, providing the shared database
-infrastructure service described by
-[ODH-ADR-Operator-0017](https://github.com/opendatahub-io/architecture-decision-records/blob/main/operator/ODH-ADR-Operator-0017-shared-database-infrastructure-service.md).
-It runs as an ODH platform module, reconciling the `DatabaseService` API and, in later phases, the
-infrastructure CRDs consumers use to request schemas and database claims.
+The Open Data Hub database operator provides the shared database infrastructure service described by
+[ODH-ADR-Operator-0017](https://github.com/opendatahub-io/architecture-decision-records/blob/main/architecture-decision-records/operator/ODH-ADR-Operator-0017-shared-database-infrastructure-service.md).
+It runs as an ODH platform module and reconciles the cluster-scoped `DatabaseService` resource.
 
-## Development
-
-- `make build` — build the manager binary.
-- `make test` — run unit tests only; it excludes `test/integration`, `test/envtest`, and `test/e2e`. Use
-  `make test-integration`, `make test-envtest`, or `make test-e2e` to run those suites.
-- `make lint` — run static analysis via `golangci-lint`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development workflows and [ARCHITECTURE.md](ARCHITECTURE.md)
+for design details.
 
 ## Installing this chart
 
-The chart has no namespace setting in `values.yaml`; install it into the namespace this operator uses elsewhere
-in this repo's kustomize bundle (`odh-db-operator-system`), or your own choice of namespace:
+The chart does not set a namespace in `values.yaml`; install it in `odh-db-operator-system`, the
+namespace used by this operator's kustomize bundle, or choose another namespace:
 
 ```sh
 helm install opendatahub-db-operator config/chart --create-namespace --namespace odh-db-operator-system
 ```
 
-After installation, apply the cluster-scoped `DatabaseService` singleton and wait for it to reconcile to Ready:
+After installation, apply the cluster-scoped `DatabaseService` singleton and wait for it to become Ready:
 
 ```sh
 kubectl apply -f - <<'EOF'
@@ -34,5 +28,6 @@ EOF
 kubectl wait --for=condition=Ready databaseservice/default-db-operator --timeout=5m
 ```
 
-Helm installs the `DatabaseService` CRD from `crds/` on the first install, but does not apply CRD changes on
-upgrade. Apply an updated schema separately with `kubectl apply -f config/chart/crds/` alongside `helm upgrade`.
+Helm installs the `DatabaseService` CRD from `config/chart/crds/` on first install but skips CRD
+changes on upgrade. Apply an updated schema separately with `kubectl apply -f config/chart/crds/`
+alongside `helm upgrade`.
