@@ -43,29 +43,46 @@ func (m *Controller) reconcileExternalAction(ctx context.Context, rr *odhtypes.R
 
 	cfg, err := loadExternalConfig(ctx, rr.Client, obj)
 	if err != nil {
-		obj.Status.Connection = infraApi.ProviderConnectionStatus{}
-		obj.Status.TLS = nil
-		obj.Status.ServerVersion = ""
-		reason := externalFailureReason(err)
-		message := err.Error()
-		switch reason {
-		case "ConnectionSecretUnavailable":
-			message += ". Verify that the referenced admin Secret exists in the configured namespace."
-		case "ConnectionSecretInvalid":
-			message += ". Correct the admin Secret's connection fields and retry."
-		}
-		rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse, conditions.WithReason(reason), conditions.WithMessage(message))
-		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionUnknown, conditions.WithReason(reason), conditions.WithMessage(message))
-		rr.Conditions.Mark(ConditionServerVersion, metav1.ConditionUnknown, conditions.WithReason(reason), conditions.WithMessage("Server version is unavailable until a connection can be verified"))
+		reportExternalConfigFailure(rr, obj, err)
 		return nil
 	}
 	obj.Status.Connection = providerConnectionStatus(cfg)
 	obj.Status.TLS = &infraApi.ProviderTLSStatus{Enabled: cfg.TLSEnabled(), Ready: cfg.TLSReady()}
+	if err := configureExternalTLS(ctx, rr, &cfg); err != nil {
+		return m.markConnectionFailure(rr, obj, cfg, err)
+	}
+	version, err := m.detectExternalServerVersion(ctx, cfg)
+	if err != nil {
+		return m.markConnectionFailure(rr, obj, cfg, err)
+	}
+	reportExternalServerVersion(rr, obj, version)
+	rr.Conditions.Mark(ConditionReachable, metav1.ConditionTrue, conditions.WithReason("ConnectionVerified"), conditions.WithMessage("Connection verified"))
+	return nil
+}
+
+func reportExternalConfigFailure(
+	rr *odhtypes.ReconciliationRequest,
+	obj *infraApi.DatabaseProvider,
+	err error,
+) {
+	obj.Status.Connection = infraApi.ProviderConnectionStatus{}
+	obj.Status.TLS = nil
+	obj.Status.ServerVersion = ""
+	reason := externalFailureReason(err)
+	rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse, conditions.WithReason(reason), conditions.WithMessage(err.Error()))
+	rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionUnknown, conditions.WithReason(reason), conditions.WithMessage(err.Error()))
+	rr.Conditions.Mark(ConditionServerVersion, metav1.ConditionUnknown,
+		conditions.WithReason(reason),
+		conditions.WithMessage("Server version is unavailable until a connection can be verified"),
+	)
+}
+
+func configureExternalTLS(ctx context.Context, rr *odhtypes.ReconciliationRequest, cfg *postgres.Config) error {
 	unsupportedCiphers := []string(nil)
 	if cfg.TLSEnabled() {
 		profile, err := platformtls.Load(ctx, rr.Client)
 		if err != nil {
-			return m.markConnectionFailure(rr, cfg, fmt.Errorf("loading cluster TLS profile: %w", err))
+			return fmt.Errorf("loading cluster TLS profile: %w", err)
 		}
 		mutator, unsupported := platformtls.ConfigFromProfile(profile.Spec)
 		cfg.TLSConfigMutator = mutator
@@ -83,22 +100,30 @@ func (m *Controller) reconcileExternalAction(ctx context.Context, rr *odhtypes.R
 	default:
 		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse, conditions.WithReason(reasonTLSProvisioning), conditions.WithMessage("External provider TLS configuration is pending"))
 	}
+	return nil
+}
+
+func (m *Controller) detectExternalServerVersion(ctx context.Context, cfg postgres.Config) (int, error) {
 	factory := m.PostgresClientFactory
 	if factory == nil {
 		factory = postgres.DefaultClientFactory
 	}
 	pgClient, err := factory(ctx, cfg)
 	if err != nil {
-		return m.markConnectionFailure(rr, cfg, err)
+		return 0, err
 	}
 	defer pgClient.Close()
 	if err := pgClient.Ping(ctx); err != nil {
-		return m.markConnectionFailure(rr, cfg, err)
+		return 0, err
 	}
 	version, err := postgres.ServerVersionNum(ctx, pgClient)
 	if err != nil {
-		return m.markConnectionFailure(rr, cfg, err)
+		return 0, err
 	}
+	return version, nil
+}
+
+func reportExternalServerVersion(rr *odhtypes.ReconciliationRequest, obj *infraApi.DatabaseProvider, version int) {
 	obj.Status.ServerVersion = postgres.FormatServerVersion(version)
 	if version < moduleconfig.TestedPostgresVersionMin || version > moduleconfig.TestedPostgresVersionMax {
 		rr.Conditions.Mark(ConditionServerVersion, metav1.ConditionFalse,
@@ -109,15 +134,16 @@ func (m *Controller) reconcileExternalAction(ctx context.Context, rr *odhtypes.R
 			conditions.WithReason("ServerVersionSupported"),
 			conditions.WithMessagef("PostgreSQL %s is within the tested range", obj.Status.ServerVersion))
 	}
-	rr.Conditions.Mark(ConditionReachable, metav1.ConditionTrue, conditions.WithReason("ConnectionVerified"), conditions.WithMessage("Connection verified"))
-	return nil
 }
 
-func (m *Controller) markConnectionFailure(rr *odhtypes.ReconciliationRequest, cfg postgres.Config, err error) error {
+func (m *Controller) markConnectionFailure(
+	rr *odhtypes.ReconciliationRequest,
+	obj *infraApi.DatabaseProvider,
+	cfg postgres.Config,
+	err error,
+) error {
 	err = postgres.SanitizeError(err, cfg.Password)
-	if obj, ok := rr.Instance.(*infraApi.DatabaseProvider); ok {
-		obj.Status.ServerVersion = ""
-	}
+	obj.Status.ServerVersion = ""
 	rr.Conditions.Mark(ConditionServerVersion, metav1.ConditionUnknown,
 		conditions.WithReason(externalFailureReason(err)),
 		conditions.WithMessage("Server version is unavailable until a connection can be verified"))

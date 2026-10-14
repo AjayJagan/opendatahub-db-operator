@@ -41,7 +41,12 @@ type ErrConnectionSecretUnavailable struct {
 }
 
 func (e ErrConnectionSecretUnavailable) Error() string {
-	return fmt.Sprintf("reading connection Secret %s/%s: %v", e.Ref.Namespace, e.Ref.Name, e.Cause)
+	return fmt.Sprintf(
+		"connection Secret %s/%s is unavailable: %v. Verify that the referenced admin Secret exists in the configured namespace",
+		e.Ref.Namespace,
+		e.Ref.Name,
+		e.Cause,
+	)
 }
 func (e ErrConnectionSecretUnavailable) Unwrap() error { return e.Cause }
 
@@ -51,7 +56,11 @@ type ErrConnectionSecretInvalid struct {
 }
 
 func (e ErrConnectionSecretInvalid) Error() string {
-	return fmt.Sprintf("invalid connection Secret %q: %v", e.Name, e.Cause)
+	return fmt.Sprintf(
+		"connection Secret %q is invalid: %v. Correct the admin Secret's connection fields and retry",
+		e.Name,
+		e.Cause,
+	)
 }
 func (e ErrConnectionSecretInvalid) Unwrap() error { return e.Cause }
 

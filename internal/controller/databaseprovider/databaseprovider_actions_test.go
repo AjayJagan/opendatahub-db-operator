@@ -206,6 +206,23 @@ func TestReconcileExternalActionReportsUnreachableWithoutReturningError(t *testi
 	g.Expect(ready.Status).NotTo(Equal(metav1.ConditionTrue))
 }
 
+func TestReconcileExternalActionRedactsPasswordFromConnectionFailure(t *testing.T) {
+	g := NewWithT(t)
+	secret := externalAdminSecret()
+	cli := testClient(t, secret)
+	provider := externalProvider()
+	m := &Controller{Options: Options{PostgresClientFactory: func(_ context.Context, _ postgres.Config) (postgres.Client, error) {
+		return &fakePostgresClient{pingErr: errors.New("authentication failed for password secret")}, nil
+	}}}
+	rr := testRequest(t, cli, provider)
+
+	g.Expect(m.reconcileExternalAction(context.Background(), rr)).To(Succeed())
+	reachable := conditions.FindStatusCondition(provider, ConditionReachable)
+	g.Expect(reachable).NotTo(BeNil())
+	g.Expect(reachable.Message).To(ContainSubstring("[redacted]"))
+	g.Expect(reachable.Message).NotTo(ContainSubstring(string(secret.Data[postgres.SecretKeyPassword])))
+}
+
 func TestReconcileExternalActionKeepsOutOfRangeServerUsable(t *testing.T) {
 	g := NewWithT(t)
 	secret := externalAdminSecret()
