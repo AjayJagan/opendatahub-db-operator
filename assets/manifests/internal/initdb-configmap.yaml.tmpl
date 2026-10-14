@@ -8,6 +8,7 @@ metadata:
     app.kubernetes.io/component: databaseprovider
     db.infrastructure.opendatahub.io/provider: {{.ProviderName}}
 data:
+  # This runs only for a new data directory; claim extensions need database-scoped reconciliation.
   00-init-extensions.sql: |
 {{- range .InitDB.Extensions }}
     CREATE EXTENSION IF NOT EXISTS "{{ . }}";

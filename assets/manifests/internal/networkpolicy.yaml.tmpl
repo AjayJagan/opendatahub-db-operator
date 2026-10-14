@@ -15,6 +15,7 @@ spec:
     - Ingress
 {{- if or .Network.OperatorNamespace (gt (len .Network.AllowedNamespaces) 0) }}
   ingress:
+    # Internal PostgreSQL has no port override; keep this aligned with its Service and container.
     - ports:
         - port: 5432
           protocol: TCP

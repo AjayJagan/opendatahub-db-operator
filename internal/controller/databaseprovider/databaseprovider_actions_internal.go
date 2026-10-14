@@ -62,51 +62,57 @@ func (m *Controller) reconcileInternalAction(
 	tlsState, err := computeInternalAdminSecret(ctx, rr.Client, obj, m.cfg)
 	obj.Status.TLS = internalTLSStatus(obj, m.cfg, tlsState.Ready)
 	if err != nil {
-		obj.Status.Connection = infraApi.ProviderConnectionStatus{}
-
-		rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse,
-			conditions.WithReason(reasonAdminSecretUnavailable),
-			conditions.WithMessagef("%s", err.Error()))
-
-		if tlsState.Enabled {
-			rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse,
-				conditions.WithReason(reasonTLSProvisioning),
-				conditions.WithMessagef("%s", err.Error()))
-		} else {
-			rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse,
-				conditions.WithSeverity(api.ConditionSeverityInfo),
-				conditions.WithReason(reasonTLSNotEnabled),
-				conditions.WithMessage("TLS is not enabled for this internal provider"))
-		}
-
-		if errors.Is(err, errInternalAdminCredentialsLost) {
-			retryAfter := m.cfg.DatabaseProvider.RetryInterval
-			if retryAfter <= 0 {
-				retryAfter = moduleconfig.DefaultRetryInterval
-			}
-			return odherrors.NewStopErrorW(err).WithRequeueAfter(retryAfter)
-		}
-		return fmt.Errorf("ensuring internal admin Secret: %w", err)
+		return m.reportInternalAdminSecretFailure(rr, obj, tlsState, err)
 	}
 
 	if err := rr.AddResources(tlsState.AdminSecret); err != nil {
 		return fmt.Errorf("adding internal admin Secret to resources: %w", err)
 	}
 
-	// Build connection status from the in-memory secret so it is available on
-	// first reconcile before the deploy action has persisted the Secret.
+	// The deploy action has not persisted the Secret on the first reconcile.
 	obj.Status.Connection = infraApi.ProviderConnectionStatus{
 		Host:     string(tlsState.AdminSecret.Data[postgres.SecretKeyHost]),
 		Port:     postgres.DefaultPort,
 		Database: string(tlsState.AdminSecret.Data[postgres.SecretKeyDatabase]),
 	}
 
+	markInternalTLSConfiguration(rr, tlsState, nil)
+	return m.addInternalResources(ctx, rr, obj, tlsState)
+}
+
+func (m *Controller) reportInternalAdminSecretFailure(
+	rr *odhtypes.ReconciliationRequest,
+	obj *infraApi.DatabaseProvider,
+	tlsState TLSState,
+	err error,
+) error {
+	obj.Status.Connection = infraApi.ProviderConnectionStatus{}
+	rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse,
+		conditions.WithReason(reasonAdminSecretUnavailable),
+		conditions.WithMessagef("%s", err.Error()))
+	markInternalTLSConfiguration(rr, tlsState, err)
+
+	if errors.Is(err, errInternalAdminCredentialsLost) {
+		retryAfter := m.cfg.DatabaseProvider.RetryInterval
+		if retryAfter <= 0 {
+			retryAfter = moduleconfig.DefaultRetryInterval
+		}
+		return odherrors.NewStopErrorW(err).WithRequeueAfter(retryAfter)
+	}
+	return fmt.Errorf("ensuring internal admin Secret: %w", err)
+}
+
+func markInternalTLSConfiguration(rr *odhtypes.ReconciliationRequest, tlsState TLSState, err error) {
 	switch {
 	case !tlsState.Enabled:
 		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse,
 			conditions.WithSeverity(api.ConditionSeverityInfo),
 			conditions.WithReason(reasonTLSNotEnabled),
 			conditions.WithMessage("TLS is not enabled for this internal provider"))
+	case err != nil:
+		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse,
+			conditions.WithReason(reasonTLSProvisioning),
+			conditions.WithMessagef("%s", err.Error()))
 	case tlsState.Ready:
 		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionTrue,
 			conditions.WithReason(reasonTLSConfigured),
@@ -116,7 +122,14 @@ func (m *Controller) reconcileInternalAction(
 			conditions.WithReason(reasonTLSProvisioning),
 			conditions.WithMessage("Internal provider TLS configuration is pending"))
 	}
+}
 
+func (m *Controller) addInternalResources(
+	ctx context.Context,
+	rr *odhtypes.ReconciliationRequest,
+	obj *infraApi.DatabaseProvider,
+	tlsState TLSState,
+) error {
 	data, err := resolveInternalData(ctx, rr.Client, obj, m.cfg, tlsState)
 	if err != nil {
 		return fmt.Errorf("resolving internal resource data: %w", err)
@@ -175,18 +188,7 @@ func (m *Controller) internalReadinessAction(
 			conditions.WithMessagef("Loading internal admin Secret: %s", err))
 		return nil
 	}
-	factory := m.PostgresClientFactory
-	if factory == nil {
-		factory = postgres.DefaultClientFactory
-	}
-	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	pgClient, err := factory(probeCtx, cfg)
-	if err == nil {
-		defer pgClient.Close()
-		err = pgClient.Ping(probeCtx)
-	}
-	if err != nil {
+	if err := m.probeInternalAdminConnection(ctx, cfg); err != nil {
 		rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse,
 			conditions.WithReason("AdminConnectionFailed"),
 			conditions.WithMessagef(
@@ -201,4 +203,19 @@ func (m *Controller) internalReadinessAction(
 		conditions.WithMessage("Internal PostgreSQL instance is ready"))
 
 	return nil
+}
+
+func (m *Controller) probeInternalAdminConnection(ctx context.Context, cfg postgres.Config) error {
+	factory := m.PostgresClientFactory
+	if factory == nil {
+		factory = postgres.DefaultClientFactory
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	pgClient, err := factory(probeCtx, cfg)
+	if err != nil {
+		return err
+	}
+	defer pgClient.Close()
+	return pgClient.Ping(probeCtx)
 }
