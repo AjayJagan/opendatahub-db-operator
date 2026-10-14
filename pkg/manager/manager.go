@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	configv1 "github.com/openshift/api/config/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -52,6 +53,9 @@ func NewScheme() (*runtime.Scheme, error) {
 	}
 	if err := apiextensionsv1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("adding apiextensions scheme: %w", err)
+	}
+	if err := configv1.AddToScheme(scheme); err != nil {
+		return nil, fmt.Errorf("adding OpenShift config scheme: %w", err)
 	}
 	if err := infraApi.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("adding infrastructure scheme: %w", err)

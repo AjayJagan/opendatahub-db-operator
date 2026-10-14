@@ -238,6 +238,10 @@ type DatabaseProviderStatus struct {
 	// TLS reports the resolved TLS state for the provider.
 	// +optional
 	TLS *ProviderTLSStatus `json:"tls,omitempty"`
+
+	// ServerVersion is the detected PostgreSQL server version. It does not gate binding.
+	// +optional
+	ServerVersion string `json:"serverVersion,omitempty"`
 }
 
 // +kubebuilder:object:root=true
@@ -247,6 +251,7 @@ type DatabaseProviderStatus struct {
 // +kubebuilder:printcolumn:name="Host",type=string,JSONPath=`.status.connection.host`,description="Resolved host"
 // +kubebuilder:printcolumn:name="Database",type=string,JSONPath=`.status.connection.database`,description="Resolved admin database"
 // +kubebuilder:printcolumn:name="Reachable",type=string,JSONPath=`.status.conditions[?(@.type=="Reachable")].status`,description="Reachable"
+// +kubebuilder:printcolumn:name="Server Version",type=string,JSONPath=`.status.serverVersion`,description="Detected PostgreSQL server version"
 
 // DatabaseProvider is the Schema for the databaseproviders API.
 type DatabaseProvider struct {

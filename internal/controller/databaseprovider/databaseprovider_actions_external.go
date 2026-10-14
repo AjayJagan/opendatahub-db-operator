@@ -19,18 +19,139 @@ package databaseprovider
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	api "github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 	odhtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
+	platformtls "github.com/opendatahub-io/odh-platform-utilities/pkg/tls"
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
+	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
+	dbcontroller "github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
+	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func (m *Controller) reconcileExternalAction(_ context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Controller) reconcileExternalAction(ctx context.Context, rr *odhtypes.ReconciliationRequest) error {
 	obj, ok := rr.Instance.(*infraApi.DatabaseProvider)
 	if !ok {
 		return fmt.Errorf("instance is not a DatabaseProvider")
 	}
 	if obj.Spec.Type != infraApi.ProviderTypeExternal {
 		return nil
+	}
+
+	cfg, err := loadExternalConfig(ctx, rr.Client, obj)
+	if err != nil {
+		reportExternalConfigFailure(rr, obj, err)
+		return nil
+	}
+	obj.Status.Connection = providerConnectionStatus(cfg)
+	obj.Status.TLS = &infraApi.ProviderTLSStatus{Enabled: cfg.TLSEnabled(), Ready: cfg.TLSReady()}
+	if err := configureExternalTLS(ctx, rr, &cfg); err != nil {
+		return m.markConnectionFailure(rr, obj, cfg, err)
+	}
+	version, err := m.detectExternalServerVersion(ctx, cfg)
+	if err != nil {
+		return m.markConnectionFailure(rr, obj, cfg, err)
+	}
+	reportExternalServerVersion(rr, obj, version)
+	rr.Conditions.Mark(ConditionReachable, metav1.ConditionTrue, conditions.WithReason("ConnectionVerified"), conditions.WithMessage("Connection verified"))
+	return nil
+}
+
+func reportExternalConfigFailure(
+	rr *odhtypes.ReconciliationRequest,
+	obj *infraApi.DatabaseProvider,
+	err error,
+) {
+	obj.Status.Connection = infraApi.ProviderConnectionStatus{}
+	obj.Status.TLS = nil
+	obj.Status.ServerVersion = ""
+	reason := externalFailureReason(err)
+	rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse, conditions.WithReason(reason), conditions.WithMessage(err.Error()))
+	rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionUnknown, conditions.WithReason(reason), conditions.WithMessage(err.Error()))
+	rr.Conditions.Mark(ConditionServerVersion, metav1.ConditionUnknown,
+		conditions.WithReason(reason),
+		conditions.WithMessage("Server version is unavailable until a connection can be verified"),
+	)
+}
+
+func configureExternalTLS(ctx context.Context, rr *odhtypes.ReconciliationRequest, cfg *postgres.Config) error {
+	unsupportedCiphers := []string(nil)
+	if cfg.TLSEnabled() {
+		profile, err := platformtls.Load(ctx, rr.Client)
+		if err != nil {
+			return fmt.Errorf("loading cluster TLS profile: %w", err)
+		}
+		mutator, unsupported := platformtls.ConfigFromProfile(profile.Spec)
+		cfg.TLSConfigMutator = mutator
+		unsupportedCiphers = unsupported
+	}
+	switch {
+	case !cfg.TLSEnabled():
+		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse, conditions.WithSeverity(api.ConditionSeverityInfo), conditions.WithReason(reasonTLSNotEnabled), conditions.WithMessage("TLS is not enabled for this external provider"))
+	case cfg.TLSReady():
+		message := "External provider TLS configuration resolved"
+		if len(unsupportedCiphers) > 0 {
+			message = fmt.Sprintf("%s; ignored unsupported cluster TLS ciphers: %s", message, strings.Join(unsupportedCiphers, ", "))
+		}
+		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionTrue, conditions.WithReason(reasonTLSConfigured), conditions.WithMessage(message))
+	default:
+		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse, conditions.WithReason(reasonTLSProvisioning), conditions.WithMessage("External provider TLS configuration is pending"))
+	}
+	return nil
+}
+
+func (m *Controller) detectExternalServerVersion(ctx context.Context, cfg postgres.Config) (postgres.Version, error) {
+	factory := m.PostgresClientFactory
+	if factory == nil {
+		factory = postgres.DefaultClientFactory
+	}
+	pgClient, err := factory(ctx, cfg)
+	if err != nil {
+		return postgres.Version{}, err
+	}
+	defer pgClient.Close()
+	if err := pgClient.Ping(ctx); err != nil {
+		return postgres.Version{}, err
+	}
+	version, err := postgres.ServerVersion(ctx, pgClient)
+	if err != nil {
+		return postgres.Version{}, err
+	}
+	return version, nil
+}
+
+func reportExternalServerVersion(rr *odhtypes.ReconciliationRequest, obj *infraApi.DatabaseProvider, version postgres.Version) {
+	obj.Status.ServerVersion = version.String()
+	if !moduleconfig.TestedPostgresVersions.Contains(version) {
+		rr.Conditions.Mark(ConditionServerVersion, metav1.ConditionFalse,
+			conditions.WithReason("ServerVersionOutsideTestedRange"),
+			conditions.WithMessagef("PostgreSQL %s is outside the tested range (13 through 17); connections and claims remain allowed", obj.Status.ServerVersion))
+	} else {
+		rr.Conditions.Mark(ConditionServerVersion, metav1.ConditionTrue,
+			conditions.WithReason("ServerVersionSupported"),
+			conditions.WithMessagef("PostgreSQL %s is within the tested range", obj.Status.ServerVersion))
+	}
+}
+
+func (m *Controller) markConnectionFailure(
+	rr *odhtypes.ReconciliationRequest,
+	obj *infraApi.DatabaseProvider,
+	cfg postgres.Config,
+	err error,
+) error {
+	err = postgres.SanitizeError(err, cfg.Password)
+	obj.Status.ServerVersion = ""
+	rr.Conditions.Mark(ConditionServerVersion, metav1.ConditionUnknown,
+		conditions.WithReason(externalFailureReason(err)),
+		conditions.WithMessage("Server version is unavailable until a connection can be verified"))
+	rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse,
+		conditions.WithReason(externalFailureReason(err)),
+		conditions.WithMessagef("%s. Verify the admin Secret and that PostgreSQL is reachable from the operator namespace.", err.Error()))
+	if retryErr := dbcontroller.StopWithQuickRetryIfConnectionRefused(err); retryErr != nil {
+		return retryErr
 	}
 	return nil
 }
