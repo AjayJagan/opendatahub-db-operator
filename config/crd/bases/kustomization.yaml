@@ -1,0 +1,3 @@
+resources:
+- infrastructure.opendatahub.io_databaseproviders.yaml
+- services.platform.opendatahub.io_databaseservices.yaml
