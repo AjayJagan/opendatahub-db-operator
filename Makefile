@@ -87,6 +87,11 @@ test-envtest: manifests ## Run the envtest-based reconciler suite (no external c
 .PHONY: test-integration-setup
 test-integration-setup: manifests ## Prepare the cluster for integration tests.
 	# Infrastructure CRDs are module operands and must not enter config/default or the Helm chart.
+	@context="$$($(KUBECTL) config current-context)"; \
+	if [ "$$context" != "$(TEST_INTEGRATION_CONTEXT)" ]; then \
+		echo "integration setup requires kube context $(TEST_INTEGRATION_CONTEXT) (current: $$context)" >&2; \
+		exit 1; \
+	fi
 	$(KUBECTL) apply -f config/crd/bases/
 
 .PHONY: test-integration-run
@@ -189,6 +194,7 @@ container-push: ## Push container image with the manager.
 	$(CONTAINER_TOOL) push "$(IMG)"
 
 KIND_CLUSTER ?= db-operator-dev
+TEST_INTEGRATION_CONTEXT ?= kind-$(KIND_CLUSTER)
 E2E_NAMESPACE ?= opendatahub-db-operator-e2e
 E2E_RELEASE   ?= opendatahub-db-operator-e2e
 
