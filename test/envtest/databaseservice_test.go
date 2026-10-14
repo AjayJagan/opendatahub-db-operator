@@ -26,6 +26,7 @@ import (
 	. "github.com/onsi/gomega"
 	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -33,6 +34,7 @@ import (
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/reconciler"
 
+	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	servicesv1alpha1 "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
 	modulemanager "github.com/opendatahub-io/opendatahub-db-operator/pkg/manager"
@@ -122,5 +124,26 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 		release := got.Status.ComponentReleaseStatus.GetRelease(moduleconfig.ReleasePlatform)
 		g.Expect(release).NotTo(BeNil(), "no platform release in status.releases")
 		g.Expect(release.Version).To(Equal(cfg.ComponentRelease().Version))
+	}).Should(Succeed())
+
+	provider := &infraApi.DatabaseProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "external-missing-secret"},
+		Spec: infraApi.DatabaseProviderSpec{
+			Type: infraApi.ProviderTypeExternal,
+			External: &infraApi.ExternalProviderSpec{
+				ConnectionSecretRef: corev1.SecretReference{Namespace: "default", Name: "missing-admin"},
+			},
+		},
+	}
+	g.Expect(cli.Create(ctx, provider)).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		got := &infraApi.DatabaseProvider{}
+		g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(provider), got)).To(Succeed())
+		reachable := conditions.FindStatusCondition(got, "Reachable")
+		g.Expect(reachable).NotTo(BeNil())
+		g.Expect(reachable.Status).To(Equal(metav1.ConditionFalse))
+		g.Expect(reachable.Reason).To(Equal("ConnectionSecretUnavailable"))
+		g.Expect(reachable.Message).To(ContainSubstring("missing-admin"))
+		g.Expect(got.Status.ServerVersion).To(BeEmpty())
 	}).Should(Succeed())
 }

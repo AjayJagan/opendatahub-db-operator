@@ -31,6 +31,10 @@ spec:
       jsonPath: .status.conditions[?(@.type=="Reachable")].status
       name: Reachable
       type: string
+    - description: Detected PostgreSQL server version
+      jsonPath: .status.serverVersion
+      name: Server Version
+      type: string
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -374,6 +378,10 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              serverVersion:
+                description: ServerVersion is the detected PostgreSQL server version.
+                  It does not gate binding.
+                type: string
               tls:
                 description: TLS reports the resolved TLS state for the provider.
                 properties:

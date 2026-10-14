@@ -101,6 +101,9 @@ const (
 	// KeyDatabaseServiceRetryInterval.
 	DefaultRetryInterval = 3 * time.Minute
 
+	TestedPostgresVersionMin = 130000
+	TestedPostgresVersionMax = 179999
+
 	// ReleasePlatform is the release name used in status.releases for the
 	// platform version handshake.
 	ReleasePlatform = "platform"
