@@ -46,10 +46,6 @@ var (
 )
 
 var (
-	SchemaClaim          = infraApi.SchemeGroupVersion.WithKind("SchemaClaim")
-	SchemaClaimList      = infraApi.SchemeGroupVersion.WithKind("SchemaClaimList")
-	DatabaseClaim        = infraApi.SchemeGroupVersion.WithKind("DatabaseClaim")
-	DatabaseClaimList    = infraApi.SchemeGroupVersion.WithKind("DatabaseClaimList")
 	DatabaseProvider     = infraApi.SchemeGroupVersion.WithKind("DatabaseProvider")
 	DatabaseProviderList = infraApi.SchemeGroupVersion.WithKind("DatabaseProviderList")
 )
