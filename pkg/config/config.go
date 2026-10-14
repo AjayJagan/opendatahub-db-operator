@@ -71,10 +71,10 @@ const (
 
 	// KeyDatabaseServiceRetryInterval is the periodic-retry interval for the
 	// DatabaseService reconciler, passed to reconciler.WithDefaultRequeueAfter.
-	// The infrastructure reconcilers (SchemaClaim/DatabaseClaim/
-	// DatabaseProvider) add their own independent retry-interval keys in
-	// RHOAIENG-96277 -- they are not declared here.
 	KeyDatabaseServiceRetryInterval = "databaseservice.retry-interval"
+	// KeyDatabaseProviderRetryInterval is the periodic-retry interval for the
+	// DatabaseProvider reconciler.
+	KeyDatabaseProviderRetryInterval = "databaseprovider.retry-interval"
 
 	// PlatformType* are the identifier strings written to the platformType
 	// ConfigMap key by the platform operator. They match the switch cases in
@@ -124,17 +124,14 @@ const (
 // Controller-runtime fields use dot-separated ConfigMap keys under
 // the "controller." prefix (e.g. "controller.leader-election.enabled").
 //
-// This is a deliberately narrower Config than the proof of concept's: it
-// carries only the generic controller settings plus DatabaseService's own
-// retry interval. The infrastructure reconcilers' config keys
-// (SchemaClaim/DatabaseClaim/DatabaseProvider retry intervals, the internal
-// Postgres/pgvector image defaults) are database-specific and land in
-// RHOAIENG-96277 alongside the types and reconcilers they configure.
+// This config covers generic controller settings and independent retry intervals
+// for DatabaseService and DatabaseProvider reconciliation.
 type Config struct {
 	OperatorNamespace string           `mapstructure:"operator-namespace"`
 	PlatformType      string           `mapstructure:"platformType"`
 	PlatformVersion   PlatformVersion  `mapstructure:"platformVersion"`
 	Controller        ControllerConfig `mapstructure:"controller"`
+	DatabaseProvider  RetryConfig      `mapstructure:"databaseprovider"`
 	DatabaseService   RetryConfig      `mapstructure:"databaseservice"`
 }
 
