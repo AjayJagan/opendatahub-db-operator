@@ -33,6 +33,7 @@ import (
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
 	dbcontroller "github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
+	pginstance "github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres/instance"
 	configv1 "github.com/openshift/api/config/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -314,6 +315,8 @@ func TestReconcileInternalActionDefaultsPostgresResources(t *testing.T) {
 				if rr.Resources[i].GetKind() == "StatefulSet" {
 					statefulSet := &appsv1.StatefulSet{}
 					g.Expect(runtime.DefaultUnstructuredConverter.FromUnstructured(rr.Resources[i].Object, statefulSet)).To(Succeed())
+					g.Expect(statefulSet.Spec.Replicas).NotTo(BeNil())
+					g.Expect(*statefulSet.Spec.Replicas).To(Equal(pginstance.InternalPostgresReplicaCount))
 					container = &statefulSet.Spec.Template.Spec.Containers[0]
 				}
 			}
@@ -325,19 +328,66 @@ func TestReconcileInternalActionDefaultsPostgresResources(t *testing.T) {
 	}
 }
 
-func TestInternalReadinessRequiresExactlyOneReadyReplica(t *testing.T) {
-	for _, readyReplicas := range []int32{0, 1} {
-		t.Run(map[int32]string{0: "not ready", 1: "ready"}[readyReplicas], func(t *testing.T) {
+func TestReconcileInternalActionUsesConfiguredPostgresImage(t *testing.T) {
+	const postgresImage = "registry.redhat.io/rhel9/postgresql-16"
+
+	for _, extension := range []string{"vector", "pg_trgm", "uuid-ossp", "pgcrypto"} {
+		t.Run(extension, func(t *testing.T) {
+			g := NewWithT(t)
+			provider := &infraApi.DatabaseProvider{
+				ObjectMeta: metav1.ObjectMeta{Name: "internal"},
+				Spec: infraApi.DatabaseProviderSpec{
+					Type: infraApi.ProviderTypeInternal,
+					Internal: &infraApi.InternalProviderSpec{
+						Namespace:  "database-system",
+						Storage:    infraApi.StorageSpec{Size: resource.MustParse("1Gi")},
+						Extensions: []string{extension},
+					},
+				},
+			}
+			rr := testRequest(t, testClient(t), provider)
+			m := &Controller{Options: Options{cfg: &moduleconfig.Config{
+				PostgresImage: postgresImage,
+			}}}
+
+			g.Expect(m.reconcileInternalAction(context.Background(), rr)).To(Succeed())
+
+			for i := range rr.Resources {
+				if rr.Resources[i].GetKind() != "StatefulSet" {
+					continue
+				}
+				statefulSet := &appsv1.StatefulSet{}
+				g.Expect(runtime.DefaultUnstructuredConverter.FromUnstructured(rr.Resources[i].Object, statefulSet)).To(Succeed())
+				g.Expect(statefulSet.Spec.Template.Spec.Containers).To(HaveLen(1))
+				g.Expect(statefulSet.Spec.Template.Spec.Containers[0].Image).To(Equal(postgresImage))
+				return
+			}
+
+			t.Fatal("internal provider did not render a StatefulSet")
+		})
+	}
+}
+
+func TestInternalReadinessRequiresDesiredReplicaCount(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		readyReplicas int32
+		ready         bool
+	}{
+		{name: "not ready", readyReplicas: 0},
+		{name: "ready", readyReplicas: pginstance.InternalPostgresReplicaCount, ready: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			g := NewWithT(t)
 			provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "internal"}, Spec: infraApi.DatabaseProviderSpec{Type: infraApi.ProviderTypeInternal, Internal: &infraApi.InternalProviderSpec{Namespace: "database-system"}}}
-			sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "internal", Namespace: "database-system"}, Status: appsv1.StatefulSetStatus{ReadyReplicas: readyReplicas}}
+			sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "internal", Namespace: "database-system"}, Status: appsv1.StatefulSetStatus{ReadyReplicas: tc.readyReplicas}}
 			secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "internal-admin", Namespace: "database-system"}, Data: map[string][]byte{postgres.SecretKeyHost: []byte("internal.database-system.svc"), postgres.SecretKeyPort: []byte("5432"), postgres.SecretKeyUser: []byte("postgres"), postgres.SecretKeyPassword: []byte("original-password"), postgres.SecretKeyDatabase: []byte("postgres")}}
 			m := &Controller{Options: Options{cfg: &moduleconfig.Config{}, PostgresClientFactory: func(_ context.Context, _ postgres.Config) (postgres.Client, error) { return &fakePostgresClient{}, nil }}}
 			rr := testRequest(t, testClient(t, sts, secret), provider)
 			rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionTrue)
 			g.Expect(m.internalReadinessAction(context.Background(), rr)).To(Succeed())
 			reachable := conditions.FindStatusCondition(provider, ConditionReachable)
-			if readyReplicas == 1 {
+			if tc.ready {
 				g.Expect(reachable.Status).To(Equal(metav1.ConditionTrue))
 			} else {
 				g.Expect(reachable.Status).To(Equal(metav1.ConditionFalse))
@@ -346,10 +396,23 @@ func TestInternalReadinessRequiresExactlyOneReadyReplica(t *testing.T) {
 	}
 }
 
+func TestMarkInternalTLSConfigurationPrefersDisabledState(t *testing.T) {
+	g := NewWithT(t)
+	provider := &infraApi.DatabaseProvider{}
+	rr := testRequest(t, testClient(t), provider)
+
+	markInternalTLSConfiguration(rr, TLSState{}, errors.New("admin Secret unavailable"))
+
+	condition := conditions.FindStatusCondition(provider, ConditionTLSConfiguration)
+	g.Expect(condition).NotTo(BeNil())
+	g.Expect(condition.Status).To(Equal(metav1.ConditionFalse))
+	g.Expect(condition.Reason).To(Equal(reasonTLSNotEnabled))
+}
+
 func TestInternalReadinessRejectsUnusableAdminSecret(t *testing.T) {
 	g := NewWithT(t)
 	provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "internal"}, Spec: infraApi.DatabaseProviderSpec{Type: infraApi.ProviderTypeInternal, Internal: &infraApi.InternalProviderSpec{Namespace: "database-system"}}}
-	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "internal", Namespace: "database-system"}, Status: appsv1.StatefulSetStatus{ReadyReplicas: 1}}
+	sts := &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "internal", Namespace: "database-system"}, Status: appsv1.StatefulSetStatus{ReadyReplicas: pginstance.InternalPostgresReplicaCount}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "internal-admin", Namespace: "database-system"}, Data: map[string][]byte{postgres.SecretKeyHost: []byte("internal.database-system.svc"), postgres.SecretKeyPort: []byte("5432"), postgres.SecretKeyUser: []byte("postgres"), postgres.SecretKeyPassword: []byte("new-password"), postgres.SecretKeyDatabase: []byte("postgres")}}
 	m := &Controller{Options: Options{cfg: &moduleconfig.Config{}, PostgresClientFactory: func(_ context.Context, _ postgres.Config) (postgres.Client, error) {
 		return &fakePostgresClient{pingErr: errors.New("authentication failed for new-password")}, nil

@@ -172,9 +172,7 @@ type InternalProviderSpec struct {
 	TLS *InternalProviderTLSSpec `json:"tls,omitempty"`
 
 	// Extensions lists PostgreSQL extensions to make available inside the
-	// internal instance. Each value selects a built-in container image:
-	// "vector" uses the pgvector image; all others use the standard
-	// PostgreSQL image. Cannot be changed after provider creation.
+	// internal instance. Cannot be changed after provider creation.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="extensions are immutable after provider creation"
 	// +kubebuilder:validation:items:Enum=vector;pg_trgm;uuid-ossp;pgcrypto

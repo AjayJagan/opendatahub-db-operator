@@ -116,9 +116,7 @@ spec:
                   extensions:
                     description: |-
                       Extensions lists PostgreSQL extensions to make available inside the
-                      internal instance. Each value selects a built-in container image:
-                      "vector" uses the pgvector image; all others use the standard
-                      PostgreSQL image. Cannot be changed after provider creation.
+                      internal instance. Cannot be changed after provider creation.
                     items:
                       enum:
                       - vector

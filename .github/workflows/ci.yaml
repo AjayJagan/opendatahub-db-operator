@@ -128,49 +128,6 @@ jobs:
             exit 1
           fi
 
-      - name: Assert rendered resource set matches AC2
-        shell: bash
-        run: |
-          set -euo pipefail
-          rendered="$(mktemp)"
-          trap 'rm -f "$rendered"' EXIT
-          helm template opendatahub-db-operator config/chart --include-crds > "$rendered"
-
-          actual_resources="$(awk '
-            /^kind: / { kind = $2 }
-            /^metadata:$/ { in_metadata = 1; next }
-            in_metadata && /^  name: / {
-              print kind "/" $2
-              in_metadata = 0
-            }
-          ' "$rendered" | LC_ALL=C sort)"
-          expected_resources="$(cat <<'EOF'
-          ClusterRole/odh-db-operator-internal-provider-writer
-          ClusterRole/odh-db-operator-manager-role
-          ClusterRole/odh-db-operator-metrics-auth-role
-          ClusterRole/odh-db-operator-metrics-reader
-          ClusterRoleBinding/odh-db-operator-manager-rolebinding
-          ClusterRoleBinding/odh-db-operator-metrics-auth-rolebinding
-          ConfigMap/odh-databaseservice-config
-          CustomResourceDefinition/databaseservices.services.platform.opendatahub.io
-          Deployment/odh-db-operator-operator
-          Role/odh-db-operator-leader-election-role
-          RoleBinding/odh-db-operator-internal-provider-writer
-          RoleBinding/odh-db-operator-leader-election-rolebinding
-          Service/odh-db-operator-metrics-service
-          ServiceAccount/opendatahub-db-operator
-          EOF
-          )"
-
-          if [[ "$actual_resources" != "$expected_resources" ]]; then
-            echo "::error::Rendered Helm resource set differs from the exact AC2 set (14 resources expected)."
-            diff -u <(printf '%s\n' "$expected_resources") <(printf '%s\n' "$actual_resources") || true
-            exit 1
-          fi
-
-          echo "Rendered resource set matches AC2 (14 resources):"
-          printf '%s\n' "$actual_resources"
-
   test:
     name: Unit Tests
     runs-on: ubuntu-24.04

@@ -89,14 +89,15 @@ const (
 	DefaultPlatformType    = PlatformTypeOpenDataHub
 	DefaultPlatformVersion = ""
 
-	DefaultMetricsBindAddr    = ":8080"
-	DefaultHealthBindAddr     = ":8081"
-	DefaultLeaderElectEnabled = true
-	DefaultLeaderElectID      = "odh-db-operator-lock"
-	DefaultZapLevel           = "info"
-	DefaultZapDevMode         = false
-	DefaultZapEncoder         = ""
-	DefaultPprofEnabled       = false
+	DefaultMetricsBindAddr       = ":8080"
+	DefaultHealthBindAddr        = ":8081"
+	DefaultLeaderElectEnabled    = true
+	DefaultLeaderElectID         = "odh-db-operator-lock"
+	DefaultZapLevel              = "info"
+	DefaultZapDevMode            = false
+	DefaultZapEncoder            = ""
+	DefaultPprofEnabled          = false
+	DefaultInternalPostgresImage = "registry.redhat.io/rhel9/postgresql-16"
 
 	// DefaultRetryInterval is the compiled default for
 	// KeyDatabaseServiceRetryInterval.
@@ -136,8 +137,8 @@ type Config struct {
 	OperatorNamespace string           `mapstructure:"operator-namespace"`
 	PlatformType      string           `mapstructure:"platformType"`
 	PlatformVersion   PlatformVersion  `mapstructure:"platformVersion"`
+	PostgresImage     string           `mapstructure:"postgres-image"`
 	Controller        ControllerConfig `mapstructure:"controller"`
-	Internal          InternalConfig   `mapstructure:"internal"`
 	DatabaseProvider  RetryConfig      `mapstructure:"databaseprovider"`
 	DatabaseService   RetryConfig      `mapstructure:"databaseservice"`
 }
@@ -146,11 +147,6 @@ type Config struct {
 // reconciler.WithDefaultRequeueAfter.
 type RetryConfig struct {
 	RetryInterval time.Duration `mapstructure:"retry-interval"`
-}
-
-type InternalConfig struct {
-	PostgresImage string `mapstructure:"postgres-image"`
-	PgvectorImage string `mapstructure:"pgvector-image"`
 }
 
 type ControllerConfig struct {

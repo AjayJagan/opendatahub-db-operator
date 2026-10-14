@@ -42,11 +42,6 @@ import (
 var errInternalAdminCredentialsLost = errors.New("internal admin credentials lost")
 
 var (
-	stockExtensions = map[string]struct{}{
-		"pg_trgm":   {},
-		"uuid-ossp": {},
-		"pgcrypto":  {},
-	}
 	defaultInternalPostgresRequests = corev1.ResourceList{
 		corev1.ResourceCPU:    resource.MustParse("500m"),
 		corev1.ResourceMemory: resource.MustParse("1Gi"),
@@ -85,11 +80,6 @@ func resolveInternalData(
 		return pginstance.Data{}, fmt.Errorf("listing referenced claim namespaces: %w", err)
 	}
 
-	image, err := resolveInternalImage(provider, cfg)
-	if err != nil {
-		return pginstance.Data{}, err
-	}
-
 	storageClassName := ""
 	if provider.Spec.Internal.Storage.StorageClassName != nil {
 		storageClassName = *provider.Spec.Internal.Storage.StorageClassName
@@ -111,7 +101,8 @@ func resolveInternalData(
 			Extensions:    append([]string(nil), provider.Spec.Internal.Extensions...),
 		},
 		Postgres: pginstance.Postgres{
-			Image:           image,
+			Image:           cfg.PostgresImage,
+			Replicas:        pginstance.InternalPostgresReplicaCount,
 			Resources:       internalPostgresResources(provider.Spec.Internal.Resources),
 			AdminSecretName: dbcontroller.InternalAdminSecretName(provider.Name),
 		},
@@ -178,33 +169,6 @@ func internalPostgresResources(provided corev1.ResourceRequirements) *corev1.Res
 	}
 
 	return resolved
-}
-
-func resolveInternalImage(obj *infraApi.DatabaseProvider, cfg *moduleconfig.Config) (string, error) {
-	if obj.Spec.Internal == nil {
-		return "", fmt.Errorf("spec.internal is required for Internal providers")
-	}
-
-	hasVector := false
-	for _, extension := range obj.Spec.Internal.Extensions {
-		if extension == "vector" {
-			hasVector = true
-			continue
-		}
-		if _, ok := stockExtensions[extension]; !ok {
-			return "", fmt.Errorf(
-				"extension %q does not map to a supported internal image; use an External provider",
-				extension,
-			)
-		}
-	}
-
-	switch {
-	case hasVector:
-		return cfg.Internal.PgvectorImage, nil
-	default:
-		return cfg.Internal.PostgresImage, nil
-	}
 }
 
 func internalTLSEnabled(provider *infraApi.DatabaseProvider) bool {

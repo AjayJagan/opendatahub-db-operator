@@ -103,25 +103,28 @@ func (m *Controller) reportInternalAdminSecretFailure(
 }
 
 func markInternalTLSConfiguration(rr *odhtypes.ReconciliationRequest, tlsState TLSState, err error) {
-	switch {
-	case !tlsState.Enabled:
+	if !tlsState.Enabled {
 		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse,
 			conditions.WithSeverity(api.ConditionSeverityInfo),
 			conditions.WithReason(reasonTLSNotEnabled),
 			conditions.WithMessage("TLS is not enabled for this internal provider"))
-	case err != nil:
+		return
+	}
+	if err != nil {
 		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse,
 			conditions.WithReason(reasonTLSProvisioning),
 			conditions.WithMessagef("%s", err.Error()))
-	case tlsState.Ready:
+		return
+	}
+	if tlsState.Ready {
 		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionTrue,
 			conditions.WithReason(reasonTLSConfigured),
 			conditions.WithMessage("Internal provider TLS configuration resolved"))
-	default:
-		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse,
-			conditions.WithReason(reasonTLSProvisioning),
-			conditions.WithMessage("Internal provider TLS configuration is pending"))
+		return
 	}
+	rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse,
+		conditions.WithReason(reasonTLSProvisioning),
+		conditions.WithMessage("Internal provider TLS configuration is pending"))
 }
 
 func (m *Controller) addInternalResources(
@@ -175,7 +178,7 @@ func (m *Controller) internalReadinessAction(
 		return fmt.Errorf("reading internal StatefulSet: %w", err)
 	}
 
-	if sts.Status.ReadyReplicas != 1 {
+	if sts.Status.ReadyReplicas != pginstance.InternalPostgresReplicaCount {
 		rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse,
 			conditions.WithReason(reasonProvisioning),
 			conditions.WithMessage("Waiting for internal PostgreSQL StatefulSet to become ready"))

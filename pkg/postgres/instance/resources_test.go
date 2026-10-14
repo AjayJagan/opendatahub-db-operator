@@ -147,8 +147,13 @@ func renderNetworkPolicy(
 		Service:      Service{Name: "provider"},
 		PVC:          PVC{Name: "provider", Size: "1Gi"},
 		InitDB:       InitDB{ConfigMapName: "provider-initdb"},
-		Postgres:     Postgres{Image: "postgres:16", AdminSecretName: "provider-admin", DefaultDatabase: "postgres"},
-		Network:      NetworkPolicy{OperatorNamespace: operatorNamespace, AllowedNamespaces: allowedNamespaces},
+		Postgres: Postgres{
+			Image:           "postgres:16",
+			Replicas:        InternalPostgresReplicaCount,
+			AdminSecretName: "provider-admin",
+			DefaultDatabase: "postgres",
+		},
+		Network: NetworkPolicy{OperatorNamespace: operatorNamespace, AllowedNamespaces: allowedNamespaces},
 	})
 	g.Expect(err).NotTo(HaveOccurred())
 	if err != nil {

@@ -22,6 +22,8 @@ import (
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 )
 
+const InternalPostgresReplicaCount int32 = 1
+
 type Data struct {
 	Namespace    string
 	ProviderName string
@@ -51,6 +53,7 @@ type InitDB struct {
 
 type Postgres struct {
 	Image           string
+	Replicas        int32
 	Resources       *corev1.ResourceRequirements
 	Envs            []corev1.EnvVar
 	AdminSecretName string

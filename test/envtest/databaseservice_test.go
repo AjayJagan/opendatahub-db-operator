@@ -41,6 +41,7 @@ import (
 	servicesv1alpha1 "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
 	modulemanager "github.com/opendatahub-io/opendatahub-db-operator/pkg/manager"
+	pginstance "github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres/instance"
 	"github.com/opendatahub-io/opendatahub-db-operator/test/support"
 )
 
@@ -167,7 +168,7 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 		statefulSet := &appsv1.StatefulSet{}
 		g.Expect(cli.Get(ctx, internalKey, statefulSet)).To(Succeed())
 		g.Expect(statefulSet.Spec.Replicas).NotTo(BeNil())
-		g.Expect(*statefulSet.Spec.Replicas).To(Equal(int32(1)))
+		g.Expect(*statefulSet.Spec.Replicas).To(Equal(pginstance.InternalPostgresReplicaCount))
 		pvc := &corev1.PersistentVolumeClaim{}
 		g.Expect(cli.Get(ctx, internalKey, pvc)).To(Succeed())
 		g.Expect(pvc.Spec.Resources.Requests.Storage().String()).To(Equal("1Gi"))
