@@ -16,7 +16,6 @@ rules:
   - services
   verbs:
   - create
-  - delete
   - get
   - list
   - patch
@@ -36,7 +35,6 @@ rules:
   - statefulsets
   verbs:
   - create
-  - delete
   - get
   - list
   - patch
@@ -61,7 +59,6 @@ rules:
   - issuers
   verbs:
   - create
-  - delete
   - get
   - list
   - patch
@@ -98,7 +95,6 @@ rules:
   - networkpolicies
   verbs:
   - create
-  - delete
   - get
   - list
   - patch
