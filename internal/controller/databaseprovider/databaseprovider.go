@@ -27,7 +27,6 @@ import (
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/deploy"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
-	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/handlers"
 	fwpredicates "github.com/opendatahub-io/odh-platform-utilities/framework/controller/predicates"
 	dependentpred "github.com/opendatahub-io/odh-platform-utilities/framework/controller/predicates/dependent"
 	resourcespredicates "github.com/opendatahub-io/odh-platform-utilities/framework/controller/predicates/resources"
@@ -62,6 +61,8 @@ func NewController(cfg *moduleconfig.Config, opts ...Option) *Controller {
 func NewReconciler(ctx context.Context, mgr ctrl.Manager, cfg *moduleconfig.Config, opts ...Option) error {
 	m := NewController(cfg, opts...)
 
+	// Secret watches belong with RHOAIENG-96275's scoped cache; registering
+	// them here would cache Secrets from unrelated namespaces.
 	_, err := reconciler.ReconcilerFor(mgr, &infraApi.DatabaseProvider{}).
 		Owns(&appsv1.StatefulSet{}, reconciler.WithPredicates(predicate.Or(
 			fwpredicates.DefaultPredicate,
@@ -70,11 +71,7 @@ func NewReconciler(ctx context.Context, mgr ctrl.Manager, cfg *moduleconfig.Conf
 		Owns(&corev1.PersistentVolumeClaim{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
-		Owns(&corev1.Secret{}).
 		Owns(&networkingv1.NetworkPolicy{}).
-		Watches(&corev1.Secret{}, reconciler.WithEventHandler(
-			handlers.LabelToName("db.infrastructure.opendatahub.io/provider"),
-		)).
 		WatchesGVK(gvk.CertManagerIssuer,
 			reconciler.Dynamic(reconciler.CrdExists(gvk.CertManagerIssuer)),
 			reconciler.WithPredicates(dependentpred.New()),
