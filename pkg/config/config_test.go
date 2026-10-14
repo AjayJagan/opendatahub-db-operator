@@ -36,6 +36,8 @@ func TestLoad_Defaults(t *testing.T) {
 	g.Expect(cfg.PlatformType).To(Equal(config.DefaultPlatformType))
 	g.Expect(cfg.PlatformVersion.String()).To(Equal("0.0.0"))
 	g.Expect(cfg.OperatorNamespace).To(Equal(config.DefaultOperatorNS))
+	g.Expect(cfg.Internal.PostgresImage).To(Equal("docker.io/library/postgres:16"))
+	g.Expect(cfg.Internal.PgvectorImage).To(Equal("docker.io/pgvector/pgvector:pg16"))
 }
 
 func TestLoad_ParsesPlatformVersion(t *testing.T) {

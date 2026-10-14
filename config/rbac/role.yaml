@@ -65,6 +65,15 @@ rules:
 - apiGroups:
   - infrastructure.opendatahub.io
   resources:
+  - databaseclaims
+  - schemaclaims
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - infrastructure.opendatahub.io
+  resources:
   - databaseproviders
   verbs:
   - get

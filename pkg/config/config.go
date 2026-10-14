@@ -129,13 +129,15 @@ var TestedPostgresVersions = postgres.MajorVersionRange{Minimum: 13, Maximum: 17
 // Controller-runtime fields use dot-separated ConfigMap keys under
 // the "controller." prefix (e.g. "controller.leader-election.enabled").
 //
-// This config covers generic controller settings and independent retry intervals
-// for DatabaseService and DatabaseProvider reconciliation.
+// This config covers generic controller settings, Internal provider image
+// defaults, and independent retry intervals for DatabaseService and
+// DatabaseProvider reconciliation.
 type Config struct {
 	OperatorNamespace string           `mapstructure:"operator-namespace"`
 	PlatformType      string           `mapstructure:"platformType"`
 	PlatformVersion   PlatformVersion  `mapstructure:"platformVersion"`
 	Controller        ControllerConfig `mapstructure:"controller"`
+	Internal          InternalConfig   `mapstructure:"internal"`
 	DatabaseProvider  RetryConfig      `mapstructure:"databaseprovider"`
 	DatabaseService   RetryConfig      `mapstructure:"databaseservice"`
 }
@@ -144,6 +146,11 @@ type Config struct {
 // reconciler.WithDefaultRequeueAfter.
 type RetryConfig struct {
 	RetryInterval time.Duration `mapstructure:"retry-interval"`
+}
+
+type InternalConfig struct {
+	PostgresImage string `mapstructure:"postgres-image"`
+	PgvectorImage string `mapstructure:"pgvector-image"`
 }
 
 type ControllerConfig struct {

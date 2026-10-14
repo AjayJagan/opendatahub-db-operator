@@ -52,6 +52,8 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault(KeyDatabaseServiceRetryInterval, DefaultRetryInterval)
 	v.SetDefault(KeyDatabaseProviderRetryInterval, DefaultRetryInterval)
+	v.SetDefault("internal.postgres-image", "docker.io/library/postgres:16")
+	v.SetDefault("internal.pgvector-image", "docker.io/pgvector/pgvector:pg16")
 }
 
 // BindEnv configures Viper to read environment variables for the given

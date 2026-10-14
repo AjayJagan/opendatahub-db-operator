@@ -18,13 +18,29 @@ package databaseprovider
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"time"
 
+	api "github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	odherrors "github.com/opendatahub-io/odh-platform-utilities/framework/controller/actions/errors"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 	odhtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
+	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
+	dbcontroller "github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
+	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
+	pginstance "github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres/instance"
+	appsv1 "k8s.io/api/apps/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-func (m *Controller) reconcileInternalAction(_ context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Controller) reconcileInternalAction(
+	ctx context.Context,
+	rr *odhtypes.ReconciliationRequest,
+) error {
 	obj, ok := rr.Instance.(*infraApi.DatabaseProvider)
 	if !ok {
 		return fmt.Errorf("instance is not a DatabaseProvider")
@@ -32,10 +48,98 @@ func (m *Controller) reconcileInternalAction(_ context.Context, rr *odhtypes.Rec
 	if obj.Spec.Type != infraApi.ProviderTypeInternal {
 		return nil
 	}
+	if internalTLSEnabled(obj) {
+		available, err := dbcontroller.CertManagerAvailable(ctx, rr.Client)
+		if err != nil {
+			return fmt.Errorf("checking cert-manager availability: %w", err)
+		}
+		if !available {
+			dbcontroller.MarkCertManagerMissing(rr)
+			return nil
+		}
+	}
+
+	tlsState, err := computeInternalAdminSecret(ctx, rr.Client, obj, m.cfg)
+	obj.Status.TLS = internalTLSStatus(obj, m.cfg, tlsState.Ready)
+	if err != nil {
+		obj.Status.Connection = infraApi.ProviderConnectionStatus{}
+
+		rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse,
+			conditions.WithReason(reasonAdminSecretUnavailable),
+			conditions.WithMessagef("%s", err.Error()))
+
+		if tlsState.Enabled {
+			rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse,
+				conditions.WithReason(reasonTLSProvisioning),
+				conditions.WithMessagef("%s", err.Error()))
+		} else {
+			rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse,
+				conditions.WithSeverity(api.ConditionSeverityInfo),
+				conditions.WithReason(reasonTLSNotEnabled),
+				conditions.WithMessage("TLS is not enabled for this internal provider"))
+		}
+
+		if errors.Is(err, errInternalAdminCredentialsLost) {
+			retryAfter := m.cfg.DatabaseProvider.RetryInterval
+			if retryAfter <= 0 {
+				retryAfter = moduleconfig.DefaultRetryInterval
+			}
+			return odherrors.NewStopErrorW(err).WithRequeueAfter(retryAfter)
+		}
+		return fmt.Errorf("ensuring internal admin Secret: %w", err)
+	}
+
+	if err := rr.AddResources(tlsState.AdminSecret); err != nil {
+		return fmt.Errorf("adding internal admin Secret to resources: %w", err)
+	}
+
+	// Build connection status from the in-memory secret so it is available on
+	// first reconcile before the deploy action has persisted the Secret.
+	obj.Status.Connection = infraApi.ProviderConnectionStatus{
+		Host:     string(tlsState.AdminSecret.Data[postgres.SecretKeyHost]),
+		Port:     postgres.DefaultPort,
+		Database: string(tlsState.AdminSecret.Data[postgres.SecretKeyDatabase]),
+	}
+
+	switch {
+	case !tlsState.Enabled:
+		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse,
+			conditions.WithSeverity(api.ConditionSeverityInfo),
+			conditions.WithReason(reasonTLSNotEnabled),
+			conditions.WithMessage("TLS is not enabled for this internal provider"))
+	case tlsState.Ready:
+		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionTrue,
+			conditions.WithReason(reasonTLSConfigured),
+			conditions.WithMessage("Internal provider TLS configuration resolved"))
+	default:
+		rr.Conditions.Mark(ConditionTLSConfiguration, metav1.ConditionFalse,
+			conditions.WithReason(reasonTLSProvisioning),
+			conditions.WithMessage("Internal provider TLS configuration is pending"))
+	}
+
+	data, err := resolveInternalData(ctx, rr.Client, obj, m.cfg, tlsState)
+	if err != nil {
+		return fmt.Errorf("resolving internal resource data: %w", err)
+	}
+
+	pgres, err := pginstance.Resources(ctx, data)
+	if err != nil {
+		return fmt.Errorf("rendering internal resources: %w", err)
+	}
+
+	for i := range pgres {
+		if err := rr.AddResources(&pgres[i]); err != nil {
+			return fmt.Errorf("adding internal resources: %w", err)
+		}
+	}
+
 	return nil
 }
 
-func (m *Controller) internalReadinessAction(_ context.Context, rr *odhtypes.ReconciliationRequest) error {
+func (m *Controller) internalReadinessAction(
+	ctx context.Context,
+	rr *odhtypes.ReconciliationRequest,
+) error {
 	obj, ok := rr.Instance.(*infraApi.DatabaseProvider)
 	if !ok {
 		return fmt.Errorf("instance is not a DatabaseProvider")
@@ -43,5 +147,58 @@ func (m *Controller) internalReadinessAction(_ context.Context, rr *odhtypes.Rec
 	if obj.Spec.Type != infraApi.ProviderTypeInternal {
 		return nil
 	}
+
+	sts := &appsv1.StatefulSet{}
+	sts.Namespace = dbcontroller.InternalNamespace(obj, m.cfg.OperatorNamespace)
+	sts.Name = dbcontroller.InternalServiceName(obj.Name)
+
+	if err := rr.Client.Get(ctx, client.ObjectKeyFromObject(sts), sts); err != nil {
+		if apierrors.IsNotFound(err) {
+			rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse,
+				conditions.WithReason(reasonProvisioning),
+				conditions.WithMessage("Waiting for internal PostgreSQL resources"))
+			return nil
+		}
+		return fmt.Errorf("reading internal StatefulSet: %w", err)
+	}
+
+	if sts.Status.ReadyReplicas != 1 {
+		rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse,
+			conditions.WithReason(reasonProvisioning),
+			conditions.WithMessage("Waiting for internal PostgreSQL StatefulSet to become ready"))
+		return nil
+	}
+	cfg, err := dbcontroller.LoadProviderConfig(ctx, rr.Client, obj, m.cfg.OperatorNamespace)
+	if err != nil {
+		rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse,
+			conditions.WithReason(reasonAdminSecretUnavailable),
+			conditions.WithMessagef("Loading internal admin Secret: %s", err))
+		return nil
+	}
+	factory := m.PostgresClientFactory
+	if factory == nil {
+		factory = postgres.DefaultClientFactory
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	pgClient, err := factory(probeCtx, cfg)
+	if err == nil {
+		defer pgClient.Close()
+		err = pgClient.Ping(probeCtx)
+	}
+	if err != nil {
+		rr.Conditions.Mark(ConditionReachable, metav1.ConditionFalse,
+			conditions.WithReason("AdminConnectionFailed"),
+			conditions.WithMessagef(
+				"Internal PostgreSQL admin connection failed: %s. Verify the admin Secret, TLS, and network access.",
+				postgres.SanitizeError(err, cfg.Password),
+			))
+		return nil
+	}
+
+	rr.Conditions.Mark(ConditionReachable, metav1.ConditionTrue,
+		conditions.WithReason(reasonInstanceRunning),
+		conditions.WithMessage("Internal PostgreSQL instance is ready"))
+
 	return nil
 }
