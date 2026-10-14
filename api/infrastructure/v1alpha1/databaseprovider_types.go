@@ -150,6 +150,7 @@ type StorageSpec struct {
 // +kubebuilder:validation:XValidation:rule="has(oldSelf.extensions) == has(self.extensions)",message="extensions cannot be added or removed after provider creation"
 type InternalProviderSpec struct {
 	// Namespace overrides where the internal PostgreSQL resources are created.
+	// The operator service account needs the Internal writer role bound there.
 	// When unset, the operator namespace is used. Cannot be changed after creation.
 	// +optional
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="namespace is immutable after provider creation"

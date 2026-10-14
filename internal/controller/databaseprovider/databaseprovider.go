@@ -53,10 +53,10 @@ func NewController(cfg *moduleconfig.Config, opts ...Option) *Controller {
 // +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=databaseproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=databaseproviders/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=schemaclaims;databaseclaims,verbs=get;list;watch
-// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch;create;update;patch
-// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims;services;configmaps;secrets,verbs=get;list;watch;create;update;patch
-// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch
-// +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;certificates,verbs=get;list;watch;create;update;patch
+// +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=persistentvolumeclaims;services;configmaps;secrets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;certificates,verbs=get;list;watch
 
 func NewReconciler(ctx context.Context, mgr ctrl.Manager, cfg *moduleconfig.Config, opts ...Option) error {
 	m := NewController(cfg, opts...)

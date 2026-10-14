@@ -133,6 +133,7 @@ spec:
                   namespace:
                     description: |-
                       Namespace overrides where the internal PostgreSQL resources are created.
+                      The operator service account needs the Internal writer role bound there.
                       When unset, the operator namespace is used. Cannot be changed after creation.
                     maxLength: 63
                     type: string
