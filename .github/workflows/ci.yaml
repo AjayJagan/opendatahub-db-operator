@@ -145,6 +145,7 @@ jobs:
             }
           ' "$rendered" | LC_ALL=C sort)"
           expected_resources="$(cat <<'EOF'
+          ClusterRole/odh-db-operator-internal-provider-writer
           ClusterRole/odh-db-operator-manager-role
           ClusterRole/odh-db-operator-metrics-auth-role
           ClusterRole/odh-db-operator-metrics-reader
@@ -154,6 +155,7 @@ jobs:
           CustomResourceDefinition/databaseservices.services.platform.opendatahub.io
           Deployment/odh-db-operator-operator
           Role/odh-db-operator-leader-election-role
+          RoleBinding/odh-db-operator-internal-provider-writer
           RoleBinding/odh-db-operator-leader-election-rolebinding
           Service/odh-db-operator-metrics-service
           ServiceAccount/opendatahub-db-operator
@@ -161,12 +163,12 @@ jobs:
           )"
 
           if [[ "$actual_resources" != "$expected_resources" ]]; then
-            echo "::error::Rendered Helm resource set differs from the exact AC2 set (12 resources expected)."
+            echo "::error::Rendered Helm resource set differs from the exact AC2 set (14 resources expected)."
             diff -u <(printf '%s\n' "$expected_resources") <(printf '%s\n' "$actual_resources") || true
             exit 1
           fi
 
-          echo "Rendered resource set matches AC2 (12 resources):"
+          echo "Rendered resource set matches AC2 (14 resources):"
           printf '%s\n' "$actual_resources"
 
   test:
