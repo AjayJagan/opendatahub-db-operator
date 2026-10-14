@@ -77,6 +77,7 @@ func TestManagerStartsAndBecomesHealthy(t *testing.T) {
 	cfg.Controller.Metrics.BindAddress = "0"
 	cfg.Controller.Health.BindAddress = healthAddr
 	cfg.Controller.Pprof.BindAddress = "0"
+	cfg.Controller.Webhook.Enabled = false
 	cfg.Controller.LeaderElection.Enabled = true
 	cfg.Controller.LeaderElection.ID = "opendatahub-db-operator-scaffold-it-lock"
 

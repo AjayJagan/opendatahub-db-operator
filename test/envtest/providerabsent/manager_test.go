@@ -59,6 +59,7 @@ func TestDatabaseServiceReconcilesWithoutProviderCRD(t *testing.T) {
 	cfg.Controller.Metrics.BindAddress = "0"
 	cfg.Controller.Health.BindAddress = "0"
 	cfg.Controller.Pprof.BindAddress = "0"
+	cfg.Controller.Webhook.Enabled = false
 
 	mgr, err := modulemanager.New(ctx, restCfg, cfg)
 	g.Expect(err).NotTo(HaveOccurred())

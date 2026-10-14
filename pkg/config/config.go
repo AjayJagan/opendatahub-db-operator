@@ -69,6 +69,9 @@ const (
 	KeyZapEncoder         = "controller.zap.encoder"
 	KeyPprofEnabled       = "controller.pprof.enabled"
 	KeyPprofBindAddr      = "controller.pprof.bind-address"
+	KeyWebhookEnabled     = "controller.webhook.enabled"
+	KeyWebhookPort        = "controller.webhook.port"
+	KeyWebhookCertDir     = "controller.webhook.cert-dir"
 
 	// KeyDatabaseServiceRetryInterval is the periodic-retry interval for the
 	// DatabaseService reconciler, passed to reconciler.WithDefaultRequeueAfter.
@@ -98,6 +101,9 @@ const (
 	DefaultZapEncoder            = ""
 	DefaultPprofEnabled          = false
 	DefaultInternalPostgresImage = "registry.redhat.io/rhel9/postgresql-16"
+	DefaultWebhookEnabled        = true
+	DefaultWebhookPort           = 9443
+	DefaultWebhookCertDir        = "/tmp/k8s-webhook-server/serving-certs"
 
 	// DefaultRetryInterval is the compiled default for
 	// KeyDatabaseServiceRetryInterval.
@@ -157,6 +163,7 @@ type ControllerConfig struct {
 	LeaderElection LeaderElectionConfig `mapstructure:"leader-election"`
 	Zap            ZapConfig            `mapstructure:"zap"`
 	Pprof          PprofConfig          `mapstructure:"pprof"`
+	Webhook        WebhookConfig        `mapstructure:"webhook"`
 }
 
 type MetricsConfig struct {
@@ -181,6 +188,12 @@ type ZapConfig struct {
 type PprofConfig struct {
 	Enabled     bool   `mapstructure:"enabled"`
 	BindAddress string `mapstructure:"bind-address"`
+}
+
+type WebhookConfig struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Port    int    `mapstructure:"port"`
+	CertDir string `mapstructure:"cert-dir"`
 }
 
 // ComponentRelease returns the platform handshake entry for status.releases.

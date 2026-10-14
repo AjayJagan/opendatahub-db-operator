@@ -49,6 +49,9 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault(KeyZapEncoder, DefaultZapEncoder)
 	v.SetDefault(KeyPprofEnabled, DefaultPprofEnabled)
 	v.SetDefault(KeyPprofBindAddr, "")
+	v.SetDefault(KeyWebhookEnabled, DefaultWebhookEnabled)
+	v.SetDefault(KeyWebhookPort, DefaultWebhookPort)
+	v.SetDefault(KeyWebhookCertDir, DefaultWebhookCertDir)
 
 	v.SetDefault(KeyDatabaseServiceRetryInterval, DefaultRetryInterval)
 	v.SetDefault(KeyDatabaseProviderRetryInterval, DefaultRetryInterval)
