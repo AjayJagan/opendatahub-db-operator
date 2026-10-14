@@ -31,6 +31,7 @@ import (
 
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	servicesv1alpha1 "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
+	"github.com/opendatahub-io/opendatahub-db-operator/internal/controller/databaseprovider"
 	"github.com/opendatahub-io/opendatahub-db-operator/internal/controller/databaseservice"
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
 )
@@ -103,6 +104,11 @@ func New(
 
 	if err := databaseservice.NewReconciler(ctx, mgr, cfg); err != nil {
 		return nil, fmt.Errorf("creating databaseservice reconciler: %w", err)
+	}
+	if err := databaseprovider.NewReconciler(ctx, mgr, cfg, databaseprovider.Options{
+		Recorder: mgr.GetEventRecorder(infraApi.DatabaseProviderResource),
+	}); err != nil {
+		return nil, fmt.Errorf("creating databaseprovider reconciler: %w", err)
 	}
 
 	if err := mgr.AddHealthzCheck(healthCheckName, healthz.Ping); err != nil {

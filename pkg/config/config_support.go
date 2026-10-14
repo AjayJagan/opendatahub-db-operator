@@ -51,6 +51,7 @@ func setDefaults(v *viper.Viper) {
 	v.SetDefault(KeyPprofBindAddr, "")
 
 	v.SetDefault(KeyDatabaseServiceRetryInterval, DefaultRetryInterval)
+	v.SetDefault(KeyDatabaseProviderRetryInterval, DefaultRetryInterval)
 }
 
 // BindEnv configures Viper to read environment variables for the given

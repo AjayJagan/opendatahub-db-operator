@@ -128,8 +128,7 @@ func TestComponentRelease_EmptyVersion(t *testing.T) {
 // DatabaseService's retry-interval config key must always be config-driven,
 // never a hardcoded literal in controller code, so its three-layer
 // precedence (compiled default -> ConfigMap -> env var) is exercised
-// explicitly, along with proof that it's independently overridable (i.e.
-// this is the only retry-interval key phase 1 declares -- see config.go).
+// explicitly, along with proof that it is independently overridable.
 
 func TestLoad_DatabaseServiceRetryDefault(t *testing.T) {
 	g := NewWithT(t)
@@ -163,6 +162,15 @@ func TestLoad_DatabaseServiceRetry_EnvOverridesConfigMap(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 
 	g.Expect(cfg.DatabaseService.RetryInterval).To(Equal(90 * time.Second))
+}
+
+func TestLoad_DatabaseProviderRetryDefault(t *testing.T) {
+	g := NewWithT(t)
+
+	cfg, err := config.Load()
+	g.Expect(err).NotTo(HaveOccurred())
+
+	g.Expect(cfg.DatabaseProvider.RetryInterval).To(Equal(config.DefaultRetryInterval))
 }
 
 func TestLoad_UsesExplicitConfigPathFromStructOption(t *testing.T) {
