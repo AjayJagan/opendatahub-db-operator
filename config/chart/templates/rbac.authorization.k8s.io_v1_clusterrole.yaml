@@ -12,10 +12,15 @@ rules:
   resources:
   - configmaps
   - persistentvolumeclaims
+  - secrets
   - services
   verbs:
+  - create
+  - delete
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - apiextensions.k8s.io
@@ -30,8 +35,12 @@ rules:
   resources:
   - statefulsets
   verbs:
+  - create
+  - delete
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - authentication.k8s.io
@@ -51,8 +60,12 @@ rules:
   - certificates
   - issuers
   verbs:
+  - create
+  - delete
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - events.k8s.io
@@ -65,15 +78,8 @@ rules:
   - infrastructure.opendatahub.io
   resources:
   - databaseclaims
-  - schemaclaims
-  verbs:
-  - get
-  - list
-  - watch
-- apiGroups:
-  - infrastructure.opendatahub.io
-  resources:
   - databaseproviders
+  - schemaclaims
   verbs:
   - get
   - list
@@ -91,8 +97,12 @@ rules:
   resources:
   - networkpolicies
   verbs:
+  - create
+  - delete
   - get
   - list
+  - patch
+  - update
   - watch
 - apiGroups:
   - services.platform.opendatahub.io
