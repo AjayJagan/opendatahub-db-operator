@@ -28,6 +28,7 @@ import (
 
 	common "github.com/opendatahub-io/odh-platform-utilities/api/common"
 	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
+	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
 )
 
 // PlatformVersion wraps semver.Version and implements encoding.TextUnmarshaler
@@ -101,9 +102,6 @@ const (
 	// KeyDatabaseServiceRetryInterval.
 	DefaultRetryInterval = 3 * time.Minute
 
-	TestedPostgresVersionMin = 130000
-	TestedPostgresVersionMax = 179999
-
 	// ReleasePlatform is the release name used in status.releases for the
 	// platform version handshake.
 	ReleasePlatform = "platform"
@@ -116,6 +114,10 @@ const (
 	// configuration values (e.g. ODH_MODULE_OPERATOR_PLATFORM_TYPE).
 	EnvPrefix = "ODH_MODULE_OPERATOR"
 )
+
+// TestedPostgresVersions is the inclusive range of PostgreSQL major releases
+// tested by this operator.
+var TestedPostgresVersions = postgres.MajorVersionRange{Minimum: 13, Maximum: 17}
 
 // Config holds the complete operator configuration.
 //

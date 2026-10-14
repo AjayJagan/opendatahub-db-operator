@@ -103,29 +103,29 @@ func configureExternalTLS(ctx context.Context, rr *odhtypes.ReconciliationReques
 	return nil
 }
 
-func (m *Controller) detectExternalServerVersion(ctx context.Context, cfg postgres.Config) (int, error) {
+func (m *Controller) detectExternalServerVersion(ctx context.Context, cfg postgres.Config) (postgres.Version, error) {
 	factory := m.PostgresClientFactory
 	if factory == nil {
 		factory = postgres.DefaultClientFactory
 	}
 	pgClient, err := factory(ctx, cfg)
 	if err != nil {
-		return 0, err
+		return postgres.Version{}, err
 	}
 	defer pgClient.Close()
 	if err := pgClient.Ping(ctx); err != nil {
-		return 0, err
+		return postgres.Version{}, err
 	}
-	version, err := postgres.ServerVersionNum(ctx, pgClient)
+	version, err := postgres.ServerVersion(ctx, pgClient)
 	if err != nil {
-		return 0, err
+		return postgres.Version{}, err
 	}
 	return version, nil
 }
 
-func reportExternalServerVersion(rr *odhtypes.ReconciliationRequest, obj *infraApi.DatabaseProvider, version int) {
-	obj.Status.ServerVersion = postgres.FormatServerVersion(version)
-	if version < moduleconfig.TestedPostgresVersionMin || version > moduleconfig.TestedPostgresVersionMax {
+func reportExternalServerVersion(rr *odhtypes.ReconciliationRequest, obj *infraApi.DatabaseProvider, version postgres.Version) {
+	obj.Status.ServerVersion = version.String()
+	if !moduleconfig.TestedPostgresVersions.Contains(version) {
 		rr.Conditions.Mark(ConditionServerVersion, metav1.ConditionFalse,
 			conditions.WithReason("ServerVersionOutsideTestedRange"),
 			conditions.WithMessagef("PostgreSQL %s is outside the tested range (13 through 17); connections and claims remain allowed", obj.Status.ServerVersion))

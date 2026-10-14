@@ -22,23 +22,35 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-func TestFormatServerVersion(t *testing.T) {
+func TestParseServerVersionNum(t *testing.T) {
 	tests := []struct {
-		name    string
-		version int
-		want    string
+		name       string
+		version    int
+		want       Version
+		wantString string
 	}{
-		{name: "pre-10 release", version: 90603, want: "9.6.3"},
-		{name: "10 release", version: 100001, want: "10.1"},
-		{name: "modern release", version: 160004, want: "16.4"},
+		{name: "pre-10 release", version: 90603, want: Version{Major: 9, Minor: 6, Patch: 3}, wantString: "9.6.3"},
+		{name: "10 release", version: 100001, want: Version{Major: 10, Minor: 1}, wantString: "10.1"},
+		{name: "modern release", version: 160004, want: Version{Major: 16, Minor: 4}, wantString: "16.4"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			g := NewWithT(t)
-			g.Expect(FormatServerVersion(tt.version)).To(Equal(tt.want))
+			version := ParseServerVersionNum(tt.version)
+			g.Expect(version).To(Equal(tt.want))
+			g.Expect(version.String()).To(Equal(tt.wantString))
 		})
 	}
+}
+
+func TestMajorVersionRangeContains(t *testing.T) {
+	g := NewWithT(t)
+	range13Through17 := MajorVersionRange{Minimum: 13, Maximum: 17}
+	g.Expect(range13Through17.Contains(Version{Major: 13})).To(BeTrue())
+	g.Expect(range13Through17.Contains(Version{Major: 17, Minor: 9})).To(BeTrue())
+	g.Expect(range13Through17.Contains(Version{Major: 12, Minor: 9})).To(BeFalse())
+	g.Expect(range13Through17.Contains(Version{Major: 18})).To(BeFalse())
 }
 
 func TestServerVersionNumReadsLiveServer(t *testing.T) {
@@ -48,8 +60,7 @@ func TestServerVersionNumReadsLiveServer(t *testing.T) {
 	g.Expect(err).NotTo(HaveOccurred())
 	t.Cleanup(client.Close)
 
-	version, err := ServerVersionNum(t.Context(), client)
+	version, err := ServerVersion(t.Context(), client)
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(version).To(BeNumerically(">=", 160000))
-	g.Expect(version).To(BeNumerically("<", 170000))
+	g.Expect(version.Major).To(Equal(16))
 }
