@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{.InitDB.ConfigMapName}}
+  namespace: {{.Namespace}}
+  labels:
+    app.kubernetes.io/name: {{.Service.Name}}
+    app.kubernetes.io/component: databaseprovider
+    db.infrastructure.opendatahub.io/provider: {{.ProviderName}}
+data:
+  00-init-extensions.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$INTERNAL_POSTGRES_DATABASE" != "postgres" ]; then
+      createdb --owner=postgres -- "$INTERNAL_POSTGRES_DATABASE"
+    fi
+{{- range .InitDB.Extensions }}
+    psql --set=ON_ERROR_STOP=1 --dbname="$INTERNAL_POSTGRES_DATABASE" -c 'CREATE EXTENSION IF NOT EXISTS "{{ . }}";'
+{{- end }}

@@ -52,6 +52,7 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault(KeyDatabaseServiceRetryInterval, DefaultRetryInterval)
 	v.SetDefault(KeyDatabaseProviderRetryInterval, DefaultRetryInterval)
+	v.SetDefault("postgres-image", DefaultInternalPostgresImage)
 }
 
 // BindEnv configures Viper to read environment variables for the given

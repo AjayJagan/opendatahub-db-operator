@@ -26,7 +26,10 @@ import (
 	. "github.com/onsi/gomega"
 	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,6 +41,7 @@ import (
 	servicesv1alpha1 "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
 	modulemanager "github.com/opendatahub-io/opendatahub-db-operator/pkg/manager"
+	pginstance "github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres/instance"
 	"github.com/opendatahub-io/opendatahub-db-operator/test/support"
 )
 
@@ -145,5 +149,43 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 		g.Expect(reachable.Reason).To(Equal("ConnectionSecretUnavailable"))
 		g.Expect(reachable.Message).To(ContainSubstring("missing-admin"))
 		g.Expect(got.Status.ServerVersion).To(BeEmpty())
+	}).Should(Succeed())
+
+	g.Expect(cli.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "database-system"}})).To(Succeed())
+	internalProvider := &infraApi.DatabaseProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "internal"},
+		Spec: infraApi.DatabaseProviderSpec{
+			Type: infraApi.ProviderTypeInternal,
+			Internal: &infraApi.InternalProviderSpec{
+				Namespace: "database-system",
+				Storage:   infraApi.StorageSpec{Size: resource.MustParse("1Gi")},
+			},
+		},
+	}
+	g.Expect(cli.Create(ctx, internalProvider)).To(Succeed())
+	internalKey := client.ObjectKey{Namespace: "database-system", Name: "internal"}
+	g.Eventually(func(g Gomega) {
+		statefulSet := &appsv1.StatefulSet{}
+		g.Expect(cli.Get(ctx, internalKey, statefulSet)).To(Succeed())
+		g.Expect(statefulSet.Spec.Replicas).NotTo(BeNil())
+		g.Expect(*statefulSet.Spec.Replicas).To(Equal(pginstance.InternalPostgresReplicaCount))
+		pvc := &corev1.PersistentVolumeClaim{}
+		g.Expect(cli.Get(ctx, internalKey, pvc)).To(Succeed())
+		g.Expect(pvc.Spec.Resources.Requests.Storage().String()).To(Equal("1Gi"))
+		policy := &networkingv1.NetworkPolicy{}
+		g.Expect(cli.Get(ctx, internalKey, policy)).To(Succeed())
+		g.Expect(policy.Spec.Ingress).To(HaveLen(1))
+		g.Expect(policy.Spec.Ingress[0].From).To(HaveLen(1))
+	}).Should(Succeed())
+
+	g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(internalProvider), internalProvider)).To(Succeed())
+	internalProvider.Spec.Internal.TLS = &infraApi.InternalProviderTLSSpec{}
+	g.Expect(cli.Update(ctx, internalProvider)).To(Succeed())
+	g.Eventually(func(g Gomega) {
+		got := &infraApi.DatabaseProvider{}
+		g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(internalProvider), got)).To(Succeed())
+		tlsCondition := conditions.FindStatusCondition(got, "TLSConfiguration")
+		g.Expect(tlsCondition).NotTo(BeNil())
+		g.Expect(tlsCondition.Reason).To(Equal("CertManagerUnavailable"))
 	}).Should(Succeed())
 }
