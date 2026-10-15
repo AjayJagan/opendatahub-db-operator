@@ -41,7 +41,7 @@ spec:
           periodSeconds: 20
         name: manager
         ports:
-        - containerPort: 9443
+        - containerPort: {{ default 9443 (int (index .Values.config "controller.webhook.port")) }}
           name: webhook-server
           protocol: TCP
         - containerPort: 8081
@@ -62,7 +62,7 @@ spec:
             - ALL
           readOnlyRootFilesystem: true
         volumeMounts:
-        - mountPath: /tmp/k8s-webhook-server/serving-certs
+        - mountPath: {{ default "/tmp/k8s-webhook-server/serving-certs" (index .Values.config "controller.webhook.cert-dir") | quote }}
           name: cert
           readOnly: true
         - mountPath: /etc/controller/config
