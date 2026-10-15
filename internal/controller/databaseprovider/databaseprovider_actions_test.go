@@ -47,6 +47,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
+const internalStatefulSetKind = "StatefulSet"
+
 func TestReconcileExternalActionReportsUnavailableSecret(t *testing.T) {
 	g := NewWithT(t)
 	provider := externalProvider()
@@ -269,7 +271,10 @@ func TestReconcileInternalActionNetworkPolicyAllowsOperatorAndProvisionedClaimNa
 	otherProvider := &infraApi.DatabaseClaim{ObjectMeta: metav1.ObjectMeta{Name: "database-other", Namespace: "workload-other"}, Spec: infraApi.DatabaseClaimSpec{Provider: infraApi.ProviderRef{Name: "another-provider"}}}
 	otherProvider.Status.Conditions = []fwapi.Condition{{Type: dbcontroller.ConditionProvisioned, Status: metav1.ConditionTrue}}
 	rr := testRequest(t, testClient(t, activeSchema, activeDatabase, duplicateNamespace, unprovisioned, otherProvider), provider)
-	m := &Controller{Options: Options{cfg: &moduleconfig.Config{OperatorNamespace: "operator-system", PostgresImage: "postgres:16"}}}
+	m := &Controller{Options: Options{cfg: &moduleconfig.Config{
+		OperatorNamespace: "operator-system",
+		PostgresImage:     moduleconfig.DefaultInternalPostgresImage,
+	}}}
 
 	g.Expect(m.reconcileInternalAction(context.Background(), rr)).To(Succeed())
 	var policy *unstructured.Unstructured
@@ -308,11 +313,13 @@ func TestReconcileInternalActionDefaultsPostgresResources(t *testing.T) {
 			g := NewWithT(t)
 			provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "internal"}, Spec: infraApi.DatabaseProviderSpec{Type: infraApi.ProviderTypeInternal, Internal: &infraApi.InternalProviderSpec{Namespace: "database-system", Storage: infraApi.StorageSpec{Size: resource.MustParse("1Gi")}, Resources: *tc.provided.DeepCopy()}}}
 			rr := testRequest(t, testClient(t), provider)
-			m := &Controller{Options: Options{cfg: &moduleconfig.Config{PostgresImage: "postgres:16"}}}
+			m := &Controller{Options: Options{cfg: &moduleconfig.Config{
+				PostgresImage: moduleconfig.DefaultInternalPostgresImage,
+			}}}
 			g.Expect(m.reconcileInternalAction(context.Background(), rr)).To(Succeed())
 			var container *corev1.Container
 			for i := range rr.Resources {
-				if rr.Resources[i].GetKind() == "StatefulSet" {
+				if rr.Resources[i].GetKind() == internalStatefulSetKind {
 					statefulSet := &appsv1.StatefulSet{}
 					g.Expect(runtime.DefaultUnstructuredConverter.FromUnstructured(rr.Resources[i].Object, statefulSet)).To(Succeed())
 					g.Expect(statefulSet.Spec.Replicas).NotTo(BeNil())
@@ -353,7 +360,7 @@ func TestReconcileInternalActionUsesConfiguredPostgresImage(t *testing.T) {
 			g.Expect(m.reconcileInternalAction(context.Background(), rr)).To(Succeed())
 
 			for i := range rr.Resources {
-				if rr.Resources[i].GetKind() != "StatefulSet" {
+				if rr.Resources[i].GetKind() != internalStatefulSetKind {
 					continue
 				}
 				statefulSet := &appsv1.StatefulSet{}
@@ -407,6 +414,94 @@ func TestMarkInternalTLSConfigurationPrefersDisabledState(t *testing.T) {
 	g.Expect(condition).NotTo(BeNil())
 	g.Expect(condition.Status).To(Equal(metav1.ConditionFalse))
 	g.Expect(condition.Reason).To(Equal(reasonTLSNotEnabled))
+}
+
+func TestResolveInternalTLSStateRequiresCompleteCredentials(t *testing.T) {
+	provider := &infraApi.DatabaseProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "internal"},
+		Spec: infraApi.DatabaseProviderSpec{
+			Type: infraApi.ProviderTypeInternal,
+			Internal: &infraApi.InternalProviderSpec{
+				Namespace: "database-system",
+				TLS:       &infraApi.InternalProviderTLSSpec{},
+			},
+		},
+	}
+	cfg := &moduleconfig.Config{OperatorNamespace: "operator-system"}
+
+	for _, tc := range []struct {
+		name  string
+		data  map[string][]byte
+		ready bool
+	}{
+		{
+			name: "CA only",
+			data: map[string][]byte{postgres.SecretKeyCA: []byte("ca")},
+		},
+		{
+			name: "CA and certificate without key",
+			data: map[string][]byte{
+				postgres.SecretKeyCA: []byte("ca"),
+				"tls.crt":            []byte("certificate"),
+			},
+		},
+		{
+			name: "complete credentials",
+			data: map[string][]byte{
+				postgres.SecretKeyCA: []byte("ca"),
+				"tls.crt":            []byte("certificate"),
+				"tls.key":            []byte("key"),
+			},
+			ready: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := NewWithT(t)
+			secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      internalTLSSecretName(provider),
+					Namespace: "database-system",
+				},
+				Data: tc.data,
+			}
+
+			state, err := resolveInternalTLSState(context.Background(), testClient(t, secret), provider, cfg)
+
+			g.Expect(err).NotTo(HaveOccurred())
+			g.Expect(state.Ready).To(Equal(tc.ready))
+		})
+	}
+}
+
+func TestAddInternalResourcesDefersStatefulSetUntilTLSIsReady(t *testing.T) {
+	g := NewWithT(t)
+	provider := &infraApi.DatabaseProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "internal"},
+		Spec: infraApi.DatabaseProviderSpec{
+			Type: infraApi.ProviderTypeInternal,
+			Internal: &infraApi.InternalProviderSpec{
+				Namespace: "database-system",
+				Storage:   infraApi.StorageSpec{Size: resource.MustParse("1Gi")},
+				TLS:       &infraApi.InternalProviderTLSSpec{},
+			},
+		},
+	}
+	rr := testRequest(t, testClient(t), provider)
+	m := &Controller{Options: Options{cfg: &moduleconfig.Config{
+		OperatorNamespace: "operator-system",
+		PostgresImage:     moduleconfig.DefaultInternalPostgresImage,
+	}}}
+
+	g.Expect(m.addInternalResources(context.Background(), rr, provider, TLSState{Enabled: true})).To(Succeed())
+
+	kinds := make(map[string]struct{}, len(rr.Resources))
+	for i := range rr.Resources {
+		kinds[rr.Resources[i].GetKind()] = struct{}{}
+	}
+	g.Expect(kinds).NotTo(HaveKey(internalStatefulSetKind))
+	g.Expect(kinds).To(HaveKey("Certificate"))
+	g.Expect(kinds).To(HaveKey("Issuer"))
+	g.Expect(kinds).To(HaveKey("ConfigMap"))
 }
 
 func TestInternalReadinessRejectsUnusableAdminSecret(t *testing.T) {

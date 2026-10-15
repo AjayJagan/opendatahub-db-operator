@@ -5,8 +5,91 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 )
+
+func TestResources_UseRedHatPostgresContainerContract(t *testing.T) {
+	g := NewWithT(t)
+	resources, err := Resources(context.Background(), Data{
+		Namespace:    "database-system",
+		ProviderName: "internal",
+		Service:      Service{Name: "internal"},
+		PVC:          PVC{Name: "internal", Size: "1Gi"},
+		InitDB: InitDB{
+			ConfigMapName: "internal-initdb",
+			Extensions:    []string{"pg_trgm", "vector"},
+		},
+		Postgres: Postgres{
+			Image:           "registry.redhat.io/rhel9/postgresql-16",
+			Replicas:        InternalPostgresReplicaCount,
+			AdminSecretName: "internal-admin",
+			DefaultDatabase: "application",
+		},
+		TLS: TLS{
+			Enabled:           true,
+			UsesManagedIssuer: true,
+			SecretName:        "internal-tls",
+			IssuerName:        "internal-issuer",
+			IssuerRef:         &infraApi.CertManagerIssuerRef{Name: "internal-issuer"},
+			Certificate:       Certificate{Name: "internal-certificate"},
+		},
+	})
+	g.Expect(err).NotTo(HaveOccurred())
+
+	statefulSet := &appsv1.StatefulSet{}
+	configMap := &corev1.ConfigMap{}
+	for i := range resources {
+		switch resources[i].GetKind() {
+		case "StatefulSet":
+			g.Expect(runtime.DefaultUnstructuredConverter.FromUnstructured(resources[i].Object, statefulSet)).To(Succeed())
+		case "ConfigMap":
+			g.Expect(runtime.DefaultUnstructuredConverter.FromUnstructured(resources[i].Object, configMap)).To(Succeed())
+		}
+	}
+
+	g.Expect(statefulSet.Spec.Template.Spec.SecurityContext).NotTo(BeNil())
+	g.Expect(statefulSet.Spec.Template.Spec.SecurityContext.FSGroup).NotTo(BeNil())
+	g.Expect(*statefulSet.Spec.Template.Spec.SecurityContext.FSGroup).To(Equal(int64(26)))
+	g.Expect(statefulSet.Spec.Template.Spec.Containers).To(HaveLen(1))
+	container := statefulSet.Spec.Template.Spec.Containers[0]
+
+	environment := make(map[string]corev1.EnvVar, len(container.Env))
+	for _, env := range container.Env {
+		environment[env.Name] = env
+	}
+	g.Expect(environment).To(HaveKey("POSTGRESQL_ADMIN_PASSWORD"))
+	g.Expect(environment["POSTGRESQL_ADMIN_PASSWORD"].ValueFrom.SecretKeyRef).NotTo(BeNil())
+	g.Expect(environment["POSTGRESQL_ADMIN_PASSWORD"].ValueFrom.SecretKeyRef.Key).To(Equal("password"))
+	g.Expect(environment).To(HaveKey("INTERNAL_POSTGRES_DATABASE"))
+	g.Expect(environment["INTERNAL_POSTGRES_DATABASE"].ValueFrom.SecretKeyRef).NotTo(BeNil())
+	g.Expect(environment["INTERNAL_POSTGRES_DATABASE"].ValueFrom.SecretKeyRef.Key).To(Equal("dbname"))
+	g.Expect(environment).NotTo(HaveKey("POSTGRES_USER"))
+	g.Expect(environment).NotTo(HaveKey("POSTGRES_PASSWORD"))
+	g.Expect(environment).NotTo(HaveKey("POSTGRES_DB"))
+	g.Expect(environment).NotTo(HaveKey("PGDATA"))
+
+	mounts := make(map[string]string, len(container.VolumeMounts))
+	for _, mount := range container.VolumeMounts {
+		mounts[mount.Name] = mount.MountPath
+	}
+	g.Expect(mounts["data"]).To(Equal("/var/lib/pgsql/data"))
+	g.Expect(mounts["initdb"]).To(Equal("/opt/app-root/src/postgresql-init"))
+	g.Expect(mounts["tls"]).To(Equal("/var/lib/pgsql/tls"))
+	g.Expect(container.Args).To(ContainElements(
+		"ssl_cert_file=/var/lib/pgsql/tls/tls.crt",
+		"ssl_key_file=/var/lib/pgsql/tls/tls.key",
+	))
+	g.Expect(configMap.Data).To(HaveKey("00-init-extensions.sh"))
+	initScript := configMap.Data["00-init-extensions.sh"]
+	g.Expect(initScript).To(ContainSubstring("createdb --owner=postgres -- \"$INTERNAL_POSTGRES_DATABASE\""))
+	g.Expect(initScript).To(ContainSubstring("--dbname=\"$INTERNAL_POSTGRES_DATABASE\""))
+	g.Expect(initScript).To(ContainSubstring("CREATE EXTENSION IF NOT EXISTS \"pg_trgm\""))
+	g.Expect(initScript).To(ContainSubstring("CREATE EXTENSION IF NOT EXISTS \"vector\""))
+}
 
 func TestResources_EmptyClaimNamespacesAllowOnlyOperator(t *testing.T) {
 	g := NewWithT(t)
@@ -148,7 +231,7 @@ func renderNetworkPolicy(
 		PVC:          PVC{Name: "provider", Size: "1Gi"},
 		InitDB:       InitDB{ConfigMapName: "provider-initdb"},
 		Postgres: Postgres{
-			Image:           "postgres:16",
+			Image:           "registry.redhat.io/rhel9/postgresql-16",
 			Replicas:        InternalPostgresReplicaCount,
 			AdminSecretName: "provider-admin",
 			DefaultDatabase: "postgres",

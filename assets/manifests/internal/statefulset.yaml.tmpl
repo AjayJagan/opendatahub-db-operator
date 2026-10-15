@@ -26,10 +26,8 @@ spec:
 {{- end}}
 {{- end}}
     spec:
-{{- if .TLS.Enabled}}
       securityContext:
-        fsGroup: 999
-{{- end}}
+        fsGroup: 26
       containers:
         - name: postgres
           image: {{.Postgres.Image}}
@@ -39,32 +37,26 @@ spec:
             - -c
             - ssl=on
             - -c
-            - ssl_cert_file=/var/lib/postgresql/tls/tls.crt
+            - ssl_cert_file=/var/lib/pgsql/tls/tls.crt
             - -c
-            - ssl_key_file=/var/lib/postgresql/tls/tls.key
+            - ssl_key_file=/var/lib/pgsql/tls/tls.key
 {{- end}}
           ports:
             - name: postgres
               containerPort: 5432
               protocol: TCP
           env:
-            - name: POSTGRES_USER
-              valueFrom:
-                secretKeyRef:
-                  name: {{.Postgres.AdminSecretName}}
-                  key: user
-            - name: POSTGRES_PASSWORD
+            # The generated admin Secret uses the image-reserved postgres account.
+            - name: POSTGRESQL_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{.Postgres.AdminSecretName}}
                   key: password
-            - name: POSTGRES_DB
+            - name: INTERNAL_POSTGRES_DATABASE
               valueFrom:
                 secretKeyRef:
                   name: {{.Postgres.AdminSecretName}}
                   key: dbname
-            - name: PGDATA
-              value: /var/lib/postgresql/data/pgdata
 {{- with .Postgres.Envs }}
 {{ toYaml . | nindent 12 }}
 {{- end }}
@@ -73,7 +65,7 @@ spec:
               command:
                 - sh
                 - -c
-                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+                - pg_isready -U postgres -d "$INTERNAL_POSTGRES_DATABASE"
             initialDelaySeconds: 5
             timeoutSeconds: 5
           startupProbe:
@@ -81,7 +73,7 @@ spec:
               command:
                 - sh
                 - -c
-                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+                - pg_isready -U postgres -d "$INTERNAL_POSTGRES_DATABASE"
             periodSeconds: 5
             failureThreshold: 30
           livenessProbe:
@@ -89,7 +81,7 @@ spec:
               command:
                 - sh
                 - -c
-                - pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"
+                - pg_isready -U postgres -d "$INTERNAL_POSTGRES_DATABASE"
             initialDelaySeconds: 15
             timeoutSeconds: 5
             failureThreshold: 6
@@ -98,12 +90,12 @@ spec:
 {{- end }}
           volumeMounts:
             - name: data
-              mountPath: /var/lib/postgresql/data
+              mountPath: /var/lib/pgsql/data
             - name: initdb
-              mountPath: /docker-entrypoint-initdb.d
+              mountPath: /opt/app-root/src/postgresql-init
 {{- if .TLS.Enabled}}
             - name: tls
-              mountPath: /var/lib/postgresql/tls
+              mountPath: /var/lib/pgsql/tls
               readOnly: true
 {{- end}}
       volumes:

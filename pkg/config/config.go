@@ -134,13 +134,15 @@ var TestedPostgresVersions = postgres.MajorVersionRange{Minimum: 13, Maximum: 17
 // defaults, and independent retry intervals for DatabaseService and
 // DatabaseProvider reconciliation.
 type Config struct {
-	OperatorNamespace string           `mapstructure:"operator-namespace"`
-	PlatformType      string           `mapstructure:"platformType"`
-	PlatformVersion   PlatformVersion  `mapstructure:"platformVersion"`
-	PostgresImage     string           `mapstructure:"postgres-image"`
-	Controller        ControllerConfig `mapstructure:"controller"`
-	DatabaseProvider  RetryConfig      `mapstructure:"databaseprovider"`
-	DatabaseService   RetryConfig      `mapstructure:"databaseservice"`
+	OperatorNamespace string          `mapstructure:"operator-namespace"`
+	PlatformType      string          `mapstructure:"platformType"`
+	PlatformVersion   PlatformVersion `mapstructure:"platformVersion"`
+	// PostgresImage is the Internal provider image. It must implement the Red Hat
+	// PostgreSQL container startup contract used by the rendered StatefulSet.
+	PostgresImage    string           `mapstructure:"postgres-image"`
+	Controller       ControllerConfig `mapstructure:"controller"`
+	DatabaseProvider RetryConfig      `mapstructure:"databaseprovider"`
+	DatabaseService  RetryConfig      `mapstructure:"databaseservice"`
 }
 
 // RetryConfig holds one reconciler's periodic-retry interval, passed to

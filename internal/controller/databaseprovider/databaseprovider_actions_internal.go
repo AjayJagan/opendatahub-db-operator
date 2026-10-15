@@ -144,6 +144,9 @@ func (m *Controller) addInternalResources(
 	}
 
 	for i := range pgres {
+		if tlsState.Enabled && !tlsState.Ready && pgres[i].GetKind() == "StatefulSet" {
+			continue
+		}
 		if err := rr.AddResources(&pgres[i]); err != nil {
 			return fmt.Errorf("adding internal resources: %w", err)
 		}

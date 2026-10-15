@@ -8,8 +8,12 @@ metadata:
     app.kubernetes.io/component: databaseprovider
     db.infrastructure.opendatahub.io/provider: {{.ProviderName}}
 data:
-  # This runs only for a new data directory; claim extensions need database-scoped reconciliation.
-  00-init-extensions.sql: |
+  00-init-extensions.sh: |
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ "$INTERNAL_POSTGRES_DATABASE" != "postgres" ]; then
+      createdb --owner=postgres -- "$INTERNAL_POSTGRES_DATABASE"
+    fi
 {{- range .InitDB.Extensions }}
-    CREATE EXTENSION IF NOT EXISTS "{{ . }}";
+    psql --set=ON_ERROR_STOP=1 --dbname="$INTERNAL_POSTGRES_DATABASE" -c 'CREATE EXTENSION IF NOT EXISTS "{{ . }}";'
 {{- end }}

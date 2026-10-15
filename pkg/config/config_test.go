@@ -43,10 +43,10 @@ func TestLoad_PostgresImage(t *testing.T) {
 	g := NewWithT(t)
 
 	cfg, err := config.Load(config.WithFS(fstest.MapFS{
-		"postgres-image": {Data: []byte("example.com/postgres:16")},
+		"postgres-image": {Data: []byte("registry.example.test/rhel9/postgresql-16")},
 	}))
 	g.Expect(err).NotTo(HaveOccurred())
-	g.Expect(cfg.PostgresImage).To(Equal("example.com/postgres:16"))
+	g.Expect(cfg.PostgresImage).To(Equal("registry.example.test/rhel9/postgresql-16"))
 }
 
 func TestLoad_ParsesPlatformVersion(t *testing.T) {

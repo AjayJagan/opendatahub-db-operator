@@ -105,6 +105,7 @@ func resolveInternalData(
 			Replicas:        pginstance.InternalPostgresReplicaCount,
 			Resources:       internalPostgresResources(provider.Spec.Internal.Resources),
 			AdminSecretName: dbcontroller.InternalAdminSecretName(provider.Name),
+			DefaultDatabase: dbcontroller.ProviderDefaultDatabase(provider),
 		},
 		Network: pginstance.NetworkPolicy{
 			OperatorNamespace: cfg.OperatorNamespace,
@@ -326,7 +327,9 @@ func resolveInternalTLSState(
 
 	state.TLSSecret = secret
 	state.CAData = append([]byte(nil), internalTLSCAData(secret)...)
-	state.Ready = len(state.CAData) != 0
+	state.Ready = len(state.CAData) != 0 &&
+		len(secret.Data["tls.crt"]) != 0 &&
+		len(secret.Data["tls.key"]) != 0
 	state.TLSSecretHash = internalTLSSecretHash(secret)
 
 	return state, nil
