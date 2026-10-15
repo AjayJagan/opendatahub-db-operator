@@ -1,6 +1,48 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
+  name: odh-db-operator-internal-provider-writer
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - configmaps
+  - persistentvolumeclaims
+  - secrets
+  - services
+  verbs:
+  - create
+  - get
+  - patch
+- apiGroups:
+  - apps
+  resources:
+  - statefulsets
+  verbs:
+  - create
+  - get
+  - patch
+- apiGroups:
+  - cert-manager.io
+  resources:
+  - certificates
+  - issuers
+  verbs:
+  - create
+  - get
+  - patch
+- apiGroups:
+  - networking.k8s.io
+  resources:
+  - networkpolicies
+  verbs:
+  - create
+  - get
+  - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
   name: odh-db-operator-manager-role
 rules:
 - nonResourceURLs:
@@ -12,6 +54,7 @@ rules:
   resources:
   - configmaps
   - persistentvolumeclaims
+  - secrets
   - services
   verbs:
   - get
@@ -64,7 +107,9 @@ rules:
 - apiGroups:
   - infrastructure.opendatahub.io
   resources:
+  - databaseclaims
   - databaseproviders
+  - schemaclaims
   verbs:
   - get
   - list

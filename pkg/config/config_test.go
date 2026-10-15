@@ -36,6 +36,17 @@ func TestLoad_Defaults(t *testing.T) {
 	g.Expect(cfg.PlatformType).To(Equal(config.DefaultPlatformType))
 	g.Expect(cfg.PlatformVersion.String()).To(Equal("0.0.0"))
 	g.Expect(cfg.OperatorNamespace).To(Equal(config.DefaultOperatorNS))
+	g.Expect(cfg.PostgresImage).To(Equal(config.DefaultInternalPostgresImage))
+}
+
+func TestLoad_PostgresImage(t *testing.T) {
+	g := NewWithT(t)
+
+	cfg, err := config.Load(config.WithFS(fstest.MapFS{
+		"postgres-image": {Data: []byte("registry.example.test/rhel9/postgresql-16")},
+	}))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cfg.PostgresImage).To(Equal("registry.example.test/rhel9/postgresql-16"))
 }
 
 func TestLoad_ParsesPlatformVersion(t *testing.T) {

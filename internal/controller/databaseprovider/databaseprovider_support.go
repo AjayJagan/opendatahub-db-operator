@@ -108,3 +108,9 @@ const (
 	reasonTLSProvisioning = dbcontroller.ReasonTLSProvisioning
 	reasonTLSConfigured   = dbcontroller.ReasonTLSConfigured
 )
+
+const (
+	reasonAdminSecretUnavailable = "AdminSecretUnavailable"
+	reasonInstanceRunning        = "InstanceRunning"
+	reasonProvisioning           = "Provisioning"
+)

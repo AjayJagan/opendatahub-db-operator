@@ -89,14 +89,15 @@ const (
 	DefaultPlatformType    = PlatformTypeOpenDataHub
 	DefaultPlatformVersion = ""
 
-	DefaultMetricsBindAddr    = ":8080"
-	DefaultHealthBindAddr     = ":8081"
-	DefaultLeaderElectEnabled = true
-	DefaultLeaderElectID      = "odh-db-operator-lock"
-	DefaultZapLevel           = "info"
-	DefaultZapDevMode         = false
-	DefaultZapEncoder         = ""
-	DefaultPprofEnabled       = false
+	DefaultMetricsBindAddr       = ":8080"
+	DefaultHealthBindAddr        = ":8081"
+	DefaultLeaderElectEnabled    = true
+	DefaultLeaderElectID         = "odh-db-operator-lock"
+	DefaultZapLevel              = "info"
+	DefaultZapDevMode            = false
+	DefaultZapEncoder            = ""
+	DefaultPprofEnabled          = false
+	DefaultInternalPostgresImage = "registry.redhat.io/rhel9/postgresql-16"
 
 	// DefaultRetryInterval is the compiled default for
 	// KeyDatabaseServiceRetryInterval.
@@ -129,15 +130,19 @@ var TestedPostgresVersions = postgres.MajorVersionRange{Minimum: 13, Maximum: 17
 // Controller-runtime fields use dot-separated ConfigMap keys under
 // the "controller." prefix (e.g. "controller.leader-election.enabled").
 //
-// This config covers generic controller settings and independent retry intervals
-// for DatabaseService and DatabaseProvider reconciliation.
+// This config covers generic controller settings, Internal provider image
+// defaults, and independent retry intervals for DatabaseService and
+// DatabaseProvider reconciliation.
 type Config struct {
-	OperatorNamespace string           `mapstructure:"operator-namespace"`
-	PlatformType      string           `mapstructure:"platformType"`
-	PlatformVersion   PlatformVersion  `mapstructure:"platformVersion"`
-	Controller        ControllerConfig `mapstructure:"controller"`
-	DatabaseProvider  RetryConfig      `mapstructure:"databaseprovider"`
-	DatabaseService   RetryConfig      `mapstructure:"databaseservice"`
+	OperatorNamespace string          `mapstructure:"operator-namespace"`
+	PlatformType      string          `mapstructure:"platformType"`
+	PlatformVersion   PlatformVersion `mapstructure:"platformVersion"`
+	// PostgresImage is the Internal provider image. It must implement the Red Hat
+	// PostgreSQL container startup contract used by the rendered StatefulSet.
+	PostgresImage    string           `mapstructure:"postgres-image"`
+	Controller       ControllerConfig `mapstructure:"controller"`
+	DatabaseProvider RetryConfig      `mapstructure:"databaseprovider"`
+	DatabaseService  RetryConfig      `mapstructure:"databaseservice"`
 }
 
 // RetryConfig holds one reconciler's periodic-retry interval, passed to

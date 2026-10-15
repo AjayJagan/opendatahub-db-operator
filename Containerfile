@@ -20,6 +20,7 @@ RUN go mod download
 COPY cmd/ cmd/
 COPY pkg/ pkg/
 COPY api/ api/
+COPY assets/ assets/
 COPY internal/ internal/
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-$(go env GOARCH)} \
