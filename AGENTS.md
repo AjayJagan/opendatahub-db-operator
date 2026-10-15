@@ -9,6 +9,7 @@ Always load [ARCHITECTURE.md](ARCHITECTURE.md) for repository work.
 - [CONTRIBUTING.md](CONTRIBUTING.md): `When building, testing, debugging, or reviewing a change`.
 - [Code Standards](docs/appendix/code-standards.md): `When writing or reviewing code, scripts, or CI/build configuration in this repo`.
 - [Project documentation standard](docs/appendix/project-documentation.md): `When creating, reorganizing, or reviewing project documentation`.
+- [Installation and usage](docs/installation-and-usage.md): `When installing, configuring, or operating the database service`.
 
 ## AI-specific gotchas
 
