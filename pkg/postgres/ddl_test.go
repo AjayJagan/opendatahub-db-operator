@@ -86,6 +86,112 @@ func TestDDL_EnsureDropRole(t *testing.T) {
 	g.Expect(err).To(HaveOccurred())
 }
 
+// TestDDL_ClaimCleanupDropsRoleWithOwnedObjects exercises the DatabaseClaim
+// cleanup sequence: a ReadWrite role that created objects cannot be dropped
+// until ownership is cleared, and after cleanup the role cannot log in.
+func TestDDL_ClaimCleanupDropsRoleWithOwnedObjects(t *testing.T) {
+	g := NewWithT(t)
+	cfg := startPostgres(t)
+
+	ctx := t.Context()
+	admin := openPool(t, cfg)
+
+	pw, err := postgres.GeneratePassword(24)
+	g.Expect(err).NotTo(HaveOccurred())
+	role := "owned_obj_role"
+	g.Expect(postgres.EnsureRole(ctx, admin, role, pw)).To(Succeed())
+	g.Expect(postgres.GrantDatabasePrivileges(ctx, admin, cfg.DBName, role, infraApi.AccessModeReadWrite)).To(Succeed())
+
+	roleCfg := postgres.Config{
+		Host: cfg.Host, Port: cfg.Port,
+		User: role, Password: pw, DBName: cfg.DBName,
+	}
+	roleClient := openPool(t, roleCfg)
+	_, err = roleClient.Exec(ctx, fmt.Sprintf("CREATE SCHEMA %s", postgres.QuoteIdentifier("owned_schema")))
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(roleClient.Ping(ctx)).To(Succeed())
+
+	// DropRole fails while the role still owns objects.
+	g.Expect(postgres.DropRole(ctx, admin, role)).NotTo(Succeed())
+
+	g.Expect(postgres.ClearRoleOwnedObjects(ctx, admin, role, cfg.User)).To(Succeed())
+	g.Expect(postgres.RevokeDatabasePrivileges(ctx, admin, cfg.DBName, role)).To(Succeed())
+	g.Expect(postgres.DropRole(ctx, admin, role)).To(Succeed())
+
+	exists, err := postgres.RoleExists(ctx, admin, role)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(exists).To(BeFalse())
+
+	// Claim deletion must leave no usable login for the dropped role.
+	// NewClient only builds a lazy pool; auth failure surfaces on Ping.
+	dropped := openPool(t, roleCfg)
+	g.Expect(dropped.Ping(ctx)).To(HaveOccurred())
+}
+
+// TestDDL_DropRoleTerminatesActiveSessions verifies claim cleanup can drop a
+// role while a consumer connection is still open.
+func TestDDL_DropRoleTerminatesActiveSessions(t *testing.T) {
+	g := NewWithT(t)
+	cfg := startPostgres(t)
+	ctx := t.Context()
+	admin := openPool(t, cfg)
+
+	pw, err := postgres.GeneratePassword(24)
+	g.Expect(err).NotTo(HaveOccurred())
+	role := "live_session_role"
+	g.Expect(postgres.EnsureRole(ctx, admin, role, pw)).To(Succeed())
+	g.Expect(postgres.GrantDatabasePrivileges(ctx, admin, cfg.DBName, role, infraApi.AccessModeReadWrite)).To(Succeed())
+
+	live := openPool(t, postgres.Config{
+		Host: cfg.Host, Port: cfg.Port,
+		User: role, Password: pw, DBName: cfg.DBName,
+	})
+	g.Expect(live.Ping(ctx)).To(Succeed())
+
+	// Match claim cleanup: revoke privileges, then DropRole while the consumer
+	// session is still open (DropRole terminates those backends first).
+	g.Expect(postgres.RevokeDatabasePrivileges(ctx, admin, cfg.DBName, role)).To(Succeed())
+	g.Expect(postgres.DropRole(ctx, admin, role)).To(Succeed())
+	g.Expect(live.Ping(ctx)).To(HaveOccurred())
+
+	exists, err := postgres.RoleExists(ctx, admin, role)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(exists).To(BeFalse())
+}
+
+// TestDDL_DropDatabaseWithActiveSession verifies DeletionPolicy=Delete can
+// drop a database while a consumer is still connected (PG 16 WITH FORCE).
+func TestDDL_DropDatabaseWithActiveSession(t *testing.T) {
+	g := NewWithT(t)
+	cfg := startPostgres(t)
+	ctx := t.Context()
+	admin := openPool(t, cfg)
+
+	dbName := "claim_drop_db"
+	g.Expect(postgres.CreateDatabase(ctx, admin, dbName)).To(Succeed())
+
+	pw, err := postgres.GeneratePassword(24)
+	g.Expect(err).NotTo(HaveOccurred())
+	role := "claim_drop_db_role"
+	g.Expect(postgres.EnsureRole(ctx, admin, role, pw)).To(Succeed())
+	g.Expect(postgres.GrantDatabasePrivileges(ctx, admin, dbName, role, infraApi.AccessModeReadWrite)).To(Succeed())
+
+	live := openPool(t, postgres.Config{
+		Host: cfg.Host, Port: cfg.Port,
+		User: role, Password: pw, DBName: dbName,
+	})
+	g.Expect(live.Ping(ctx)).To(Succeed())
+
+	g.Expect(postgres.DropDatabase(ctx, admin, dbName)).To(Succeed())
+	g.Expect(live.Ping(ctx)).To(HaveOccurred())
+
+	exists, err := postgres.DatabaseExists(ctx, admin, dbName)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(exists).To(BeFalse())
+
+	g.Expect(postgres.DropRole(ctx, admin, role)).To(Succeed())
+}
+
 // TestDDL_GrantSchemaPrivileges verifies ReadWrite vs ReadOnly enforcement.
 // Each subtest uses its own schema to avoid interference.
 func TestDDL_GrantSchemaPrivileges(t *testing.T) {

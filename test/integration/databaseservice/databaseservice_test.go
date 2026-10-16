@@ -44,14 +44,14 @@ const testNamespacePrefix = "opendatahub-db-operator-databaseservice-it"
 
 // TestDatabaseServiceReconcilesToReady verifies status writes against a connected cluster.
 func TestDatabaseServiceReconcilesToReady(t *testing.T) {
-	g := NewWithT(t)
-
 	ctrl.SetLogger(logr.Discard())
 
+	// NewWithT snapshots duration defaults; set them before constructing g.
 	gomegaCfg := support.LoadGomegaConfig()
 	SetDefaultEventuallyTimeout(gomegaCfg.EventuallyTimeout)
 	SetDefaultEventuallyPollingInterval(gomegaCfg.EventuallyPollingInterval)
 	SetDefaultConsistentlyPollingInterval(gomegaCfg.ConsistentlyPollingInterval)
+	g := NewWithT(t)
 
 	restCfg, err := ctrl.GetConfig()
 	g.Expect(err).NotTo(HaveOccurred(), "no kubeconfig / current context -- this test needs a real, connected cluster")

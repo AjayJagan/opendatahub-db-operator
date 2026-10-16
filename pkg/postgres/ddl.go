@@ -30,10 +30,22 @@ import (
 const (
 	sqlCreateSchemaIfNotExists = "CREATE SCHEMA IF NOT EXISTS %s"
 	sqlCreateDatabase          = "CREATE DATABASE %s"
+	sqlDropDatabase            = "DROP DATABASE IF EXISTS %s"
+	sqlDropDatabaseForce       = "DROP DATABASE IF EXISTS %s WITH (FORCE)"
 	sqlDropSchemaCascade       = "DROP SCHEMA IF EXISTS %s CASCADE"
 	sqlDropRole                = "DROP ROLE IF EXISTS %s"
-	sqlGrantUsageOnSchema      = "GRANT USAGE ON SCHEMA %s TO %s"
-	sqlGrantCreateOnSchema     = "GRANT CREATE ON SCHEMA %s TO %s"
+	// Terminate backends for a login role or database without killing the
+	// caller's own session. Bound parameters — never fmt into these.
+	sqlTerminateRoleSessions = "" +
+		"SELECT pg_terminate_backend(pid) FROM pg_stat_activity " +
+		"WHERE usename = $1 AND pid <> pg_backend_pid()"
+	sqlTerminateDatabaseSessions = "" +
+		"SELECT pg_terminate_backend(pid) FROM pg_stat_activity " +
+		"WHERE datname = $1 AND pid <> pg_backend_pid()"
+	sqlReassignOwned       = "REASSIGN OWNED BY %s TO %s"
+	sqlDropOwned           = "DROP OWNED BY %s"
+	sqlGrantUsageOnSchema  = "GRANT USAGE ON SCHEMA %s TO %s"
+	sqlGrantCreateOnSchema = "GRANT CREATE ON SCHEMA %s TO %s"
 
 	sqlGrantSelectOnTables    = "GRANT SELECT ON ALL TABLES IN SCHEMA %s TO %s"
 	sqlDefaultPrivGrantSelect = "ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT SELECT ON TABLES TO %s"
@@ -70,6 +82,7 @@ func CreateSchema(ctx context.Context, cli Client, schema string) error {
 }
 
 // CreateDatabase creates a database if it doesn't already exist. Idempotent.
+// Concurrent creates that lose the race on DuplicateDatabase are treated as success.
 func CreateDatabase(ctx context.Context, cli Client, database string) error {
 	exists, err := DatabaseExists(ctx, cli, database)
 	if err != nil {
@@ -79,6 +92,37 @@ func CreateDatabase(ctx context.Context, cli Client, database string) error {
 		return nil
 	}
 	_, err = cli.Exec(ctx, fmt.Sprintf(sqlCreateDatabase, QuoteIdentifier(database)))
+	if err != nil && IsDuplicateDatabase(err) {
+		return nil
+	}
+	return err
+}
+
+// DropDatabase drops a database if it exists. Idempotent. Callers must never
+// use this for a provider's shared default database.
+//
+// On PostgreSQL 13+ it uses WITH (FORCE) so claim DeletionPolicy=Delete is not
+// blocked by leftover application sessions. Older servers terminate other
+// backends connected to the database, then issue a plain DROP DATABASE.
+func DropDatabase(ctx context.Context, cli Client, database string) error {
+	version, err := ServerVersion(ctx, cli)
+	if err != nil {
+		return fmt.Errorf("reading server version before dropping database %q: %w", database, err)
+	}
+	if version.Major >= 13 {
+		return dropDatabase(ctx, cli, fmt.Sprintf(sqlDropDatabaseForce, QuoteIdentifier(database)))
+	}
+	if err := TerminateDatabaseSessions(ctx, cli, database); err != nil {
+		return fmt.Errorf("terminating sessions for database %q: %w", database, err)
+	}
+	return dropDatabase(ctx, cli, fmt.Sprintf(sqlDropDatabase, QuoteIdentifier(database)))
+}
+
+func dropDatabase(ctx context.Context, cli Client, stmt string) error {
+	_, err := cli.Exec(ctx, stmt)
+	if err != nil && (IsInvalidCatalogName(err) || IsUndefinedObject(err)) {
+		return nil
+	}
 	return err
 }
 
@@ -92,12 +136,16 @@ func DropSchemaCascade(ctx context.Context, cli Client, schema string) error {
 // EnsureRole creates a PostgreSQL login role with the given password if it does
 // not already exist. It is a true CREATE-only idempotent operation — it never
 // alters an existing role's password. Use SetRolePassword for explicit rotation.
+// Concurrent creates that lose the race on DuplicateObject are treated as success.
 func EnsureRole(ctx context.Context, cli Client, role, password string) error {
 	stmt := fmt.Sprintf(sqlEnsureRole,
 		QuoteLiteral(role),
 		QuoteIdentifier(role), QuoteLiteral(password),
 	)
 	_, err := cli.Exec(ctx, stmt)
+	if err != nil && IsDuplicateObject(err) {
+		return nil
+	}
 	return err
 }
 
@@ -111,9 +159,56 @@ func SetRolePassword(ctx context.Context, cli Client, role, password string) err
 }
 
 // DropRole drops a PostgreSQL role if it exists. Idempotent.
+//
+// Active sessions for the role are terminated first so DROP ROLE is not blocked
+// by claim consumers that still hold connections after deletion starts.
 func DropRole(ctx context.Context, cli Client, role string) error {
+	if err := TerminateRoleSessions(ctx, cli, role); err != nil {
+		return fmt.Errorf("terminating sessions for role %q: %w", role, err)
+	}
 	_, err := cli.Exec(ctx, fmt.Sprintf(sqlDropRole, QuoteIdentifier(role)))
 	return err
+}
+
+// TerminateRoleSessions ends backends authenticated as role, excluding the
+// caller's session. Idempotent when the role has no open sessions.
+func TerminateRoleSessions(ctx context.Context, cli Client, role string) error {
+	_, err := cli.Exec(ctx, sqlTerminateRoleSessions, role)
+	return err
+}
+
+// TerminateDatabaseSessions ends backends connected to database, excluding the
+// caller's session. Used when DROP DATABASE ... WITH (FORCE) is unavailable.
+func TerminateDatabaseSessions(ctx context.Context, cli Client, database string) error {
+	_, err := cli.Exec(ctx, sqlTerminateDatabaseSessions, database)
+	return err
+}
+
+// ReassignOwned transfers objects owned by role to newOwner. Must run while
+// connected to the database that contains those objects.
+func ReassignOwned(ctx context.Context, cli Client, role, newOwner string) error {
+	_, err := cli.Exec(ctx, fmt.Sprintf(sqlReassignOwned, QuoteIdentifier(role), QuoteIdentifier(newOwner)))
+	return err
+}
+
+// DropOwned removes privileges and default privileges owned by role in the
+// current database. Call after ReassignOwned so object ownership is cleared
+// first; together they allow DropRole to succeed when the role created objects.
+func DropOwned(ctx context.Context, cli Client, role string) error {
+	_, err := cli.Exec(ctx, fmt.Sprintf(sqlDropOwned, QuoteIdentifier(role)))
+	return err
+}
+
+// ClearRoleOwnedObjects reassigns then drops ownership for role in the current
+// database so DropRole is not blocked by dependent objects (SQLSTATE 2BP01).
+func ClearRoleOwnedObjects(ctx context.Context, cli Client, role, newOwner string) error {
+	if err := ReassignOwned(ctx, cli, role, newOwner); err != nil {
+		return fmt.Errorf("reassigning owned objects from %q to %q: %w", role, newOwner, err)
+	}
+	if err := DropOwned(ctx, cli, role); err != nil {
+		return fmt.Errorf("dropping owned privileges for %q: %w", role, err)
+	}
+	return nil
 }
 
 // GrantSchemaPrivileges grants privileges to a role on a schema according to
@@ -177,15 +272,16 @@ func GrantDatabasePrivileges(
 }
 
 // RevokeDatabasePrivileges revokes the privileges granted by GrantDatabasePrivileges.
+// Missing roles (42704) and missing databases (3D000) are treated as already gone.
 func RevokeDatabasePrivileges(ctx context.Context, cli Client, database, role string) error {
 	q := QuoteIdentifier
 	var errs []error
 	if _, err := cli.Exec(ctx, "REVOKE CREATE ON DATABASE "+q(database)+" FROM "+q(role)); err != nil &&
-		!IsUndefinedObject(err) {
+		!IsUndefinedObject(err) && !IsInvalidCatalogName(err) {
 		errs = append(errs, err)
 	}
 	if _, err := cli.Exec(ctx, "REVOKE CONNECT ON DATABASE "+q(database)+" FROM "+q(role)); err != nil &&
-		!IsUndefinedObject(err) {
+		!IsUndefinedObject(err) && !IsInvalidCatalogName(err) {
 		errs = append(errs, err)
 	}
 	if len(errs) == 0 {

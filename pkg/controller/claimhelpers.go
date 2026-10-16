@@ -22,10 +22,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/tools/events"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
@@ -41,16 +38,18 @@ const (
 var nonIdentRe = regexp.MustCompile(`[^a-z0-9_]`)
 
 // RoleNameFor derives a deterministic, PostgreSQL-safe role name from a claim's
-// namespace and name. Extracted from the identical roleNameFor helpers that
-// previously lived independently in the schemaclaim and databaseclaim packages.
+// namespace and name. A short hash of the original (unsanitized) identity is
+// always appended so distinct claim names that sanitize to the same string
+// (e.g. my-db vs my.db) cannot collide onto one role.
 func RoleNameFor(namespace, name string) string {
 	raw := fmt.Sprintf("%s_%s", namespace, name)
 	safe := nonIdentRe.ReplaceAllString(raw, "_")
-	if len(safe) > maxRoleNameLen {
-		h := fmt.Sprintf("%x", sha256.Sum256([]byte(safe)))[:8]
-		safe = safe[:maxRoleNameLen-9] + "_" + h
+	h := fmt.Sprintf("%x", sha256.Sum256([]byte(raw)))[:8]
+	baseMax := maxRoleNameLen - 9 // "_" + 8 hex
+	if len(safe) > baseMax {
+		safe = safe[:baseMax]
 	}
-	return safe
+	return safe + "_" + h
 }
 
 // NewClient loads the provider's admin connection config and opens a postgres.Client.
@@ -102,7 +101,10 @@ func ExternalProviderAllows(
 	provider *infraApi.DatabaseProvider,
 	capability infraApi.ExternalCapability,
 ) bool {
-	if provider == nil || provider.Spec.Type != infraApi.ProviderTypeExternal {
+	if provider == nil {
+		return false
+	}
+	if provider.Spec.Type != infraApi.ProviderTypeExternal {
 		return true
 	}
 	if provider.Spec.External == nil {
@@ -125,37 +127,108 @@ func WrapQuickRetry(op string, err error) error {
 	return wrapped
 }
 
-// WithGrace wraps fn in the controller's grace-period cleanup policy.
-// If fn succeeds it returns nil. If fn fails and the object's deletion
-// timestamp is older than gracePeriod, a Warning event is emitted and nil is
-// returned (allowing the finalizer to be removed). Otherwise the error is
-// returned so the cleanup is retried on the next reconcile.
-//
-// Extracted from the identical withGrace methods on each claim Controller.
-func WithGrace(
+// ClearRoleOwnershipInDatabase opens an admin connection to database and
+// reassigns/drops objects owned by role so DropRole can succeed. No-op when
+// database is missing.
+func ClearRoleOwnershipInDatabase(
 	ctx context.Context,
-	recorder events.EventRecorder,
-	gracePeriod time.Duration,
-	obj client.Object,
-	fn func(context.Context) error,
+	adminClient postgres.Client,
+	adminCfg postgres.Config,
+	factory postgres.ClientFactory,
+	database string,
+	role string,
 ) error {
-	err := fn(ctx)
-	switch {
-	case err == nil:
+	if database == "" || role == "" {
 		return nil
-	case obj.GetDeletionTimestamp() != nil && time.Since(obj.GetDeletionTimestamp().Time) > gracePeriod:
-		recorder.Eventf(
-			obj,
-			nil,
-			corev1.EventTypeWarning,
-			"CleanupGracePeriodExpired",
-			"FinalizerCleanup",
-			"Cleanup failed after %s grace period; allowing finalizer removal: %v",
-			gracePeriod,
-			err,
-		)
-		return nil
-	default:
-		return fmt.Errorf("cleanup failed (will retry within grace period): %w", err)
 	}
+	exists, err := postgres.DatabaseExists(ctx, adminClient, database)
+	if err != nil {
+		return fmt.Errorf("checking database %q before ownership cleanup: %w", database, err)
+	}
+	if !exists {
+		return nil
+	}
+
+	dbCfg := adminCfg
+	dbCfg.DBName = database
+	dbClient, err := OpenClient(ctx, dbCfg, factory)
+	if err != nil {
+		return fmt.Errorf("opening postgres client for database %q: %w", database, err)
+	}
+	defer dbClient.Close()
+
+	newOwner := adminCfg.User
+	if newOwner == "" {
+		newOwner = dbClient.Config().User
+	}
+	if err := postgres.ClearRoleOwnedObjects(ctx, dbClient, role, newOwner); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ShouldDropClaimDatabase reports whether cleanup may DROP the claim database.
+// Requires DeletionPolicy=Delete, status.databaseCreated, a named non-default
+// database, and no other DatabaseClaim still referencing it on the same provider.
+func ShouldDropClaimDatabase(
+	claim *infraApi.DatabaseClaim,
+	providerDefaultDB string,
+	others []infraApi.DatabaseClaim,
+) bool {
+	if claim == nil {
+		return false
+	}
+	if claim.Spec.DeletionPolicy != infraApi.DeletionPolicyDelete {
+		return false
+	}
+	if !claim.Status.DatabaseCreated {
+		return false
+	}
+	if claim.Spec.Database == "" {
+		return false
+	}
+	database := claim.Status.Database
+	if database == "" {
+		database = claim.Spec.Database
+	}
+	if database == "" || database == providerDefaultDB {
+		return false
+	}
+	provider := claim.Status.Provider
+	if provider == "" {
+		provider = claim.Spec.Provider.Name
+	}
+	for i := range others {
+		other := &others[i]
+		if other.UID == claim.UID {
+			continue
+		}
+		if other.Namespace == claim.Namespace && other.Name == claim.Name {
+			continue
+		}
+		otherProvider := other.Status.Provider
+		if otherProvider == "" {
+			otherProvider = other.Spec.Provider.Name
+		}
+		if otherProvider != provider {
+			continue
+		}
+		otherDB := other.Status.Database
+		if otherDB == "" {
+			otherDB = other.Spec.Database
+		}
+		if otherDB == database {
+			return false
+		}
+	}
+	return true
+}
+
+// ListDatabaseClaims returns all DatabaseClaims visible to cli.
+func ListDatabaseClaims(ctx context.Context, cli client.Client) ([]infraApi.DatabaseClaim, error) {
+	list := &infraApi.DatabaseClaimList{}
+	if err := cli.List(ctx, list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
 }

@@ -79,6 +79,12 @@ const (
 	// KeyDatabaseProviderRetryInterval is the periodic-retry interval for the
 	// DatabaseProvider reconciler.
 	KeyDatabaseProviderRetryInterval = "databaseprovider.retry-interval"
+	// KeyDatabaseClaimRetryInterval is the periodic-retry interval for the
+	// DatabaseClaim reconciler.
+	KeyDatabaseClaimRetryInterval = "databaseclaim.retry-interval"
+	// KeyGracePeriod is the config key for GracePeriod (unused by DatabaseClaim
+	// finalizer cleanup, which retries until role cleanup succeeds).
+	KeyGracePeriod = "grace-period"
 
 	// PlatformType* are the identifier strings written to the platformType
 	// ConfigMap key by the platform operator. They match the switch cases in
@@ -105,9 +111,10 @@ const (
 	DefaultWebhookPort           = 9443
 	DefaultWebhookCertDir        = "/tmp/k8s-webhook-server/serving-certs"
 
-	// DefaultRetryInterval is the compiled default for
-	// KeyDatabaseServiceRetryInterval.
+	// DefaultRetryInterval is the compiled default for reconciler retry intervals.
 	DefaultRetryInterval = 3 * time.Minute
+	// DefaultGracePeriod is the compiled default for finalizer cleanup grace.
+	DefaultGracePeriod = 5 * time.Minute
 
 	// ReleasePlatform is the release name used in status.releases for the
 	// platform version handshake.
@@ -137,8 +144,8 @@ var TestedPostgresVersions = postgres.MajorVersionRange{Minimum: 13, Maximum: 17
 // the "controller." prefix (e.g. "controller.leader-election.enabled").
 //
 // This config covers generic controller settings, Internal provider image
-// defaults, and independent retry intervals for DatabaseService and
-// DatabaseProvider reconciliation.
+// defaults, and independent retry intervals for DatabaseService,
+// DatabaseProvider, and DatabaseClaim reconciliation.
 type Config struct {
 	OperatorNamespace string          `mapstructure:"operator-namespace"`
 	PlatformType      string          `mapstructure:"platformType"`
@@ -149,6 +156,11 @@ type Config struct {
 	Controller       ControllerConfig `mapstructure:"controller"`
 	DatabaseProvider RetryConfig      `mapstructure:"databaseprovider"`
 	DatabaseService  RetryConfig      `mapstructure:"databaseservice"`
+	DatabaseClaim    RetryConfig      `mapstructure:"databaseclaim"`
+	// GracePeriod is reserved for claim kinds that may allow timed finalizer
+	// release. DatabaseClaim cleanup does not use it: the finalizer stays
+	// until role (and optional DB) cleanup succeeds.
+	GracePeriod time.Duration `mapstructure:"grace-period"`
 }
 
 // RetryConfig holds one reconciler's periodic-retry interval, passed to
@@ -288,6 +300,12 @@ func Load(opts ...Option) (*Config, error) {
 		mapstructure.StringToSliceHookFunc(","),
 	); err != nil {
 		return nil, fmt.Errorf("unmarshaling config: %w", err)
+	}
+
+	// An empty ConfigMap/env value still sets the key and overrides Viper's
+	// SetDefault; treat blank as unset so Internal always gets a usable image.
+	if cfg.PostgresImage == "" {
+		cfg.PostgresImage = DefaultInternalPostgresImage
 	}
 
 	return cfg, nil

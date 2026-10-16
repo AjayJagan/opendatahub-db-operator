@@ -33,6 +33,7 @@ import (
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/reconciler"
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
+	dbcontroller "github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/resources/gvk"
 )
 
@@ -52,6 +53,8 @@ func NewController(cfg *moduleconfig.Config, opts ...Option) *Controller {
 
 // +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=databaseproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=databaseproviders/status,verbs=get;update;patch
+// Owner refs on Internal children set blockOwnerDeletion; that requires finalizer update on the owner.
+// +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=databaseproviders/finalizers,verbs=update
 // +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=schemaclaims;databaseclaims,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims;services;configmaps;secrets,verbs=get;list;watch
@@ -63,6 +66,16 @@ func NewReconciler(ctx context.Context, mgr ctrl.Manager, cfg *moduleconfig.Conf
 
 	// Secret watches belong with RHOAIENG-96275's scoped cache; registering
 	// them here would cache Secrets from unrelated namespaces.
+	//
+	// Claim watches enqueue the bound provider so Internal NetworkPolicy
+	// ingress namespaces refresh on Provisioned/bind changes without waiting
+	// for the provider's periodic requeue (RHOAIENG-96275).
+	claimWatchPreds := reconciler.WithPredicates(predicate.Or(
+		fwpredicates.DefaultPredicate,
+		resourcespredicates.StatusChanged(),
+	))
+	claimToProvider := reconciler.WithEventMapper(dbcontroller.ClaimToProviderMapper())
+
 	_, err := reconciler.ReconcilerFor(mgr, &infraApi.DatabaseProvider{}).
 		Owns(&appsv1.StatefulSet{}, reconciler.WithPredicates(predicate.Or(
 			fwpredicates.DefaultPredicate,
@@ -72,6 +85,8 @@ func NewReconciler(ctx context.Context, mgr ctrl.Manager, cfg *moduleconfig.Conf
 		Owns(&corev1.Service{}).
 		Owns(&corev1.ConfigMap{}).
 		Owns(&networkingv1.NetworkPolicy{}).
+		Watches(&infraApi.SchemaClaim{}, claimWatchPreds, claimToProvider).
+		Watches(&infraApi.DatabaseClaim{}, claimWatchPreds, claimToProvider).
 		WatchesGVK(gvk.CertManagerIssuer,
 			reconciler.Dynamic(reconciler.CrdExists(gvk.CertManagerIssuer)),
 			reconciler.WithPredicates(dependentpred.New()),

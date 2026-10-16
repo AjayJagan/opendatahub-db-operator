@@ -50,14 +50,14 @@ const (
 // respond -- all before any CRD exists. This is the manager-startup proof
 // the whole phase hinges on (see docs/plan.md phase 1, verification rung 3).
 func TestManagerStartsAndBecomesHealthy(t *testing.T) {
-	g := NewWithT(t)
-
 	ctrl.SetLogger(logr.Discard())
 
+	// NewWithT snapshots duration defaults; set them before constructing g.
 	gomegaCfg := support.LoadGomegaConfig()
 	SetDefaultEventuallyTimeout(gomegaCfg.EventuallyTimeout)
 	SetDefaultEventuallyPollingInterval(gomegaCfg.EventuallyPollingInterval)
 	SetDefaultConsistentlyPollingInterval(gomegaCfg.ConsistentlyPollingInterval)
+	g := NewWithT(t)
 
 	restCfg, err := ctrl.GetConfig()
 	g.Expect(err).NotTo(HaveOccurred(), "no kubeconfig / current context -- this test needs a real, connected cluster")

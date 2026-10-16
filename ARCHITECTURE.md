@@ -152,6 +152,6 @@ The operator keeps credentials out of logs and quotes SQL identifiers and litera
 
 ## Stable contracts
 
-Resource names and scope are deliberate API constraints: `DatabaseService` and `DatabaseProvider` are cluster-scoped, while `SchemaClaim` and `DatabaseClaim` are namespace-scoped. Kubernetes cannot change a released CRD's scope without introducing a new kind and migrating users. The fixed `DatabaseService` singleton name is `default-db-operator`. Provider configuration identifies PostgreSQL; kind names remain engine-neutral—`DatabaseService`, `DatabaseProvider`, `SchemaClaim`, and `DatabaseClaim`.
+Resource names and scope are deliberate API constraints: `DatabaseService` and `DatabaseProvider` are cluster-scoped, while `SchemaClaim` and `DatabaseClaim` are namespace-scoped. Kubernetes cannot change a released CRD's scope without introducing a new kind and migrating users. The fixed `DatabaseService` singleton name is `default-db-operator`. The API assumes PostgreSQL; there is no `spec.engine` field. Another engine would be a new architecture, not an enum value.
 
 The [Credential contract](#credential-contract) defines the fixed Secret key names. The initial configuration sets the default provider name to `rhai-db`, which remains stable once components and claims depend on it.
