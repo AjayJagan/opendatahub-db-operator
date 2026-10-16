@@ -466,15 +466,9 @@ func referencedClaimNamespaces(
 }
 
 func schemaClaimEffectiveProvider(claim *infraApi.SchemaClaim) string {
-	if claim.Spec.Provider.Name != "" {
-		return claim.Spec.Provider.Name
-	}
-	return claim.Status.Provider
+	return dbcontroller.EffectiveProviderName(claim)
 }
 
 func databaseClaimEffectiveProvider(claim *infraApi.DatabaseClaim) string {
-	if claim.Spec.Provider.Name != "" {
-		return claim.Spec.Provider.Name
-	}
-	return claim.Status.Provider
+	return dbcontroller.EffectiveProviderName(claim)
 }
