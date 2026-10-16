@@ -22,6 +22,7 @@ import (
 
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -48,4 +49,43 @@ func TestBroadcastListMapper(t *testing.T) {
 		reconcile.Request{NamespacedName: client.ObjectKeyFromObject(claim1)},
 		reconcile.Request{NamespacedName: client.ObjectKeyFromObject(claim2)},
 	))
+}
+
+func TestClaimToProviderMapper_EnqueuesBoundProviderOnly(t *testing.T) {
+	g := NewWithT(t)
+	mapper := controller.ClaimToProviderMapper()
+
+	named := &infraApi.DatabaseClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "claim-a", Namespace: "app"},
+		Spec:       infraApi.DatabaseClaimSpec{Provider: infraApi.ProviderRef{Name: "rhai-db"}},
+	}
+	g.Expect(mapper(context.Background(), named)).To(Equal([]reconcile.Request{{
+		NamespacedName: client.ObjectKey{Name: "rhai-db"},
+	}}))
+
+	statusBound := &infraApi.SchemaClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "claim-b", Namespace: "app"},
+		Status:     infraApi.SchemaClaimStatus{Provider: "external-pg"},
+	}
+	g.Expect(mapper(context.Background(), statusBound)).To(Equal([]reconcile.Request{{
+		NamespacedName: client.ObjectKey{Name: "external-pg"},
+	}}))
+
+	unbound := &infraApi.DatabaseClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "claim-c", Namespace: "app"},
+	}
+	g.Expect(mapper(context.Background(), unbound)).To(BeEmpty())
+
+	other := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "not-a-claim"}}
+	g.Expect(mapper(context.Background(), other)).To(BeEmpty())
+
+	// Framework claim watches deliver unstructured events.
+	u := &unstructured.Unstructured{Object: map[string]any{
+		"spec": map[string]any{
+			"provider": map[string]any{"name": "from-unstructured"},
+		},
+	}}
+	g.Expect(mapper(context.Background(), u)).To(Equal([]reconcile.Request{{
+		NamespacedName: client.ObjectKey{Name: "from-unstructured"},
+	}}))
 }
