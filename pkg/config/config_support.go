@@ -55,6 +55,8 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault(KeyDatabaseServiceRetryInterval, DefaultRetryInterval)
 	v.SetDefault(KeyDatabaseProviderRetryInterval, DefaultRetryInterval)
+	v.SetDefault(KeyDatabaseClaimRetryInterval, DefaultRetryInterval)
+	v.SetDefault(KeyGracePeriod, DefaultGracePeriod)
 	v.SetDefault("postgres-image", DefaultInternalPostgresImage)
 }
 

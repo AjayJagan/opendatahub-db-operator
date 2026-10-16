@@ -55,6 +55,12 @@ const (
 	SSLModeRequire    = "require"
 	SSLModeVerifyCA   = "verify-ca"
 	SSLModeVerifyFull = "verify-full"
+
+	// AnnotationConnectionTypeProtocol is the ODH Connection API annotation
+	// that marks a Secret as a postgres connection artifact.
+	AnnotationConnectionTypeProtocol = "opendatahub.io/connection-type-protocol"
+	// ConnectionTypeProtocolPostgres is the annotation value for PostgreSQL.
+	ConnectionTypeProtocolPostgres = "postgres"
 )
 
 // Config holds the connection parameters parsed from or written to a Kubernetes

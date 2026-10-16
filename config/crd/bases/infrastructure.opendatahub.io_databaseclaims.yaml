@@ -66,10 +66,21 @@ spec:
                   the database if it does not already exist, subject to provider
                   capabilities. Immutable once set: changing it mid-life implies a
                   different claim, not an update to this one.
+                maxLength: 63
                 type: string
                 x-kubernetes-validations:
                 - message: database is immutable once set
                   rule: self == oldSelf
+              deletionPolicy:
+                default: Retain
+                description: |-
+                  DeletionPolicy governs database lifecycle on claim deletion. Retain
+                  (default) drops only the claim role; Delete may drop a named database
+                  the claim created, but never the provider's shared default database.
+                enum:
+                - Retain
+                - Delete
+                type: string
               provider:
                 description: Provider selects the DatabaseProvider to provision against.
                 properties:
@@ -147,14 +158,17 @@ spec:
             required:
             - provider
             type: object
+            x-kubernetes-validations:
+            - message: secretName cannot be removed once set
+              rule: '!has(oldSelf.secretName) || has(self.secretName)'
+            - message: database cannot be removed once set
+              rule: '!has(oldSelf.database) || has(self.database)'
           status:
             description: |-
-              DatabaseClaimStatus defines the observed state of DatabaseClaim. There is
-              no deletionPolicy field on the spec, so there is no corresponding status
-              concern either -- always-Retain semantics (docs/plan.md §5). Phase (human-
-              readable summary only -- consumers must gate on conditions[type=Provisioned],
-              never on Phase) comes from the embedded common.Status, not a redundant
-              field here.
+              DatabaseClaimStatus defines the observed state of DatabaseClaim. Phase
+              (human-readable summary only -- consumers must gate on
+              conditions[type=Provisioned], never on Phase) comes from the embedded
+              common.Status, not a redundant field here.
             properties:
               conditions:
                 items:
@@ -244,9 +258,15 @@ spec:
                 type: object
               database:
                 description: |-
-                  Database echoes spec.database exactly -- always identical, no default
-                  to resolve here (unlike SchemaClaim.status.schema).
+                  Database is the effective database name once provisioning resolves it:
+                  spec.database when set, otherwise the provider default.
                 type: string
+              databaseCreated:
+                description: |-
+                  DatabaseCreated is true when this claim created the named database during
+                  provisioning. DeletionPolicy=Delete may drop the database only when this
+                  is true (and no other DatabaseClaim still references it).
+                type: boolean
               observedGeneration:
                 description: The generation observed by the resource controller.
                 format: int64
