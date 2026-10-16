@@ -81,6 +81,7 @@ func TestDatabaseServiceReconcilesToReady(t *testing.T) {
 	cfg.Controller.Metrics.BindAddress = "0"
 	cfg.Controller.Health.BindAddress = "0"
 	cfg.Controller.Pprof.BindAddress = "0"
+	cfg.Controller.Webhook.Enabled = false
 	cfg.Controller.LeaderElection.Enabled = true
 	cfg.Controller.LeaderElection.ID = "opendatahub-db-operator-databaseservice-it-lock"
 

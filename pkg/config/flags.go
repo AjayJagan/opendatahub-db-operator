@@ -83,6 +83,8 @@ func registerStructFlags(
 		switch {
 		case fieldType.Kind() == reflect.String:
 			flags.String(flagName, v.GetString(key), help)
+		case fieldType.Kind() == reflect.Int:
+			flags.Int(flagName, v.GetInt(key), help)
 		case fieldType.Kind() == reflect.Bool:
 			flags.Bool(flagName, v.GetBool(key), help)
 		case fieldType == durationType:
