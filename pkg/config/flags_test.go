@@ -41,10 +41,51 @@ func TestRegisterFlags_DerivesFlagNamesFromConfigStruct(t *testing.T) {
 		"platform-version",
 		"controller-metrics-bind-address",
 		"controller-leader-election-enabled",
+		"controller-webhook-enabled",
+		"controller-webhook-port",
+		"controller-webhook-cert-dir",
 		"databaseservice-retry-interval",
 	} {
 		g.Expect(cmd.Flags().Lookup(name)).NotTo(BeNil(), name)
 	}
+}
+
+func TestRegisterFlags_WebhookDefaults(t *testing.T) {
+	g := NewWithT(t)
+
+	cmd := &cobra.Command{Use: "test"}
+	g.Expect(config.RegisterFlags(cmd, config.NewViper())).To(Succeed())
+
+	flagDefault := func(name string) string {
+		flag := cmd.Flags().Lookup(name)
+		g.Expect(flag).NotTo(BeNil(), name)
+		if flag == nil {
+			t.FailNow()
+		}
+		return flag.DefValue
+	}
+	g.Expect(flagDefault("controller-webhook-enabled")).To(Equal("true"))
+	g.Expect(flagDefault("controller-webhook-port")).To(Equal("9443"))
+	g.Expect(flagDefault("controller-webhook-cert-dir")).To(Equal("/tmp/k8s-webhook-server/serving-certs"))
+}
+
+func TestLoad_WebhookFlagsOverrideDefaults(t *testing.T) {
+	g := NewWithT(t)
+
+	cmd := &cobra.Command{Use: "test"}
+	v := config.NewViper()
+	g.Expect(config.RegisterFlags(cmd, v)).To(Succeed())
+	g.Expect(cmd.ParseFlags([]string{
+		"--controller-webhook-enabled=false",
+		"--controller-webhook-port=9444",
+		"--controller-webhook-cert-dir=/var/run/webhook/certs",
+	})).To(Succeed())
+
+	cfg, err := config.Load(config.LoadOptions{Viper: v})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cfg.Controller.Webhook.Enabled).To(BeFalse())
+	g.Expect(cfg.Controller.Webhook.Port).To(Equal(9444))
+	g.Expect(cfg.Controller.Webhook.CertDir).To(Equal("/var/run/webhook/certs"))
 }
 
 func TestLoad_FlagsOverrideEnvAndConfigMap(t *testing.T) {

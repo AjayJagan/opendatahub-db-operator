@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	webhookserver "sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	servicesv1alpha1 "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
@@ -90,8 +91,17 @@ func New(
 		pprofBindAddress = cfg.Controller.Pprof.BindAddress
 	}
 
+	var webhookServer webhookserver.Server
+	if cfg.Controller.Webhook.Enabled {
+		webhookServer = webhookserver.NewServer(webhookserver.Options{
+			Port:    cfg.Controller.Webhook.Port,
+			CertDir: cfg.Controller.Webhook.CertDir,
+		})
+	}
+
 	mgr, err := ctrl.NewManager(kubeConfig, ctrl.Options{
-		Scheme: scheme,
+		Scheme:        scheme,
+		WebhookServer: webhookServer,
 		Metrics: metricsserver.Options{
 			BindAddress:    cfg.Controller.Metrics.BindAddress,
 			SecureServing:  true,
@@ -106,6 +116,9 @@ func New(
 	})
 	if err != nil {
 		return nil, fmt.Errorf("creating manager: %w", err)
+	}
+	if cfg.Controller.Webhook.Enabled {
+		mgr.GetWebhookServer()
 	}
 
 	if err := databaseservice.NewReconciler(ctx, mgr, cfg); err != nil {

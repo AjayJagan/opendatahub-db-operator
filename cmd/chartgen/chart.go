@@ -57,9 +57,17 @@ const (
 	// find and replace them by exact value rather than by guessing which
 	// "image:"/"imagePullPolicy:" line in the whole Deployment belongs to
 	// the operator's own container.
-	imagePlaceholder      = "__CHARTGEN_MANAGER_IMAGE__"
-	pullPolicyPlaceholder = "__CHARTGEN_MANAGER_PULL_POLICY__"
-	resourcesPlaceholder  = "__CHARTGEN_MANAGER_RESOURCES__"
+	imagePlaceholder          = "__CHARTGEN_MANAGER_IMAGE__"
+	pullPolicyPlaceholder     = "__CHARTGEN_MANAGER_PULL_POLICY__"
+	resourcesPlaceholder      = "__CHARTGEN_MANAGER_RESOURCES__"
+	webhookServerPortName     = "webhook-server"
+	webhookCertVolumeName     = "cert"
+	webhookPortPlaceholder    = "__CHARTGEN_WEBHOOK_PORT__"
+	webhookCertDirPlaceholder = "__CHARTGEN_WEBHOOK_CERT_DIR__"
+	webhookCertDirDefault     = "/tmp/k8s-webhook-server/serving-certs"
+	tplWebhookPort            = `{{ default 9443 (int (index .Values.config "controller.webhook.port")) }}`
+	tplWebhookCertDir         = `{{ default "` + webhookCertDirDefault +
+		`" (index .Values.config "controller.webhook.cert-dir") | quote }}`
 
 	// Sentinel values stamped onto a RoleBinding/ClusterRoleBinding subject
 	// that's been structurally confirmed to be the operator's own
@@ -263,14 +271,17 @@ func rewriteOperatorConfigMapName(
 	return unstructured.SetNestedSlice(obj.Object, volumes, "spec", "template", "spec", "volumes")
 }
 
-// transformDeployment injects Helm value references for image, resources,
-// replicas, imagePullSecrets, and serviceAccountName.
+// transformDeployment injects Helm value references for the manager image,
+// resources, webhook settings, replicas, imagePullSecrets, and serviceAccountName.
 func transformDeployment(
 	obj *unstructured.Unstructured,
 	hasOperatorConfigMap bool,
 	hasChartManagedServiceAccount bool,
 ) (string, error) {
 	if err := stampManagerContainerPlaceholders(obj); err != nil {
+		return "", fmt.Errorf("deployment %s: %w", obj.GetName(), err)
+	}
+	if err := stampWebhookPlaceholders(obj); err != nil {
 		return "", fmt.Errorf("deployment %s: %w", obj.GetName(), err)
 	}
 
@@ -316,6 +327,8 @@ func transformDeployment(
 	raw = replaceReplicas(raw)
 
 	raw = replaceResourcesField(raw)
+	raw = strings.ReplaceAll(raw, webhookPortPlaceholder, tplWebhookPort)
+	raw = strings.ReplaceAll(raw, webhookCertDirPlaceholder, tplWebhookCertDir)
 
 	// Replace serviceAccountName. hasChartManagedServiceAccount gates
 	// whether the field was stamped with a sentinel above at all -- when
@@ -421,6 +434,65 @@ func stampManagerContainerPlaceholders(obj *unstructured.Unstructured) error {
 	// where an empty resources: {} on the manager container used to be
 	// skipped entirely (nothing to match) and never got templated.
 	container["resources"] = resourcesPlaceholder
+
+	return unstructured.SetNestedSlice(obj.Object, containers, "spec", "template", "spec", "containers")
+}
+
+func stampWebhookPlaceholders(obj *unstructured.Unstructured) error {
+	containers, found, err := unstructured.NestedSlice(obj.Object, "spec", "template", "spec", "containers")
+	if err != nil {
+		return fmt.Errorf("reading spec.template.spec.containers: %w", err)
+	}
+	if !found {
+		return nil
+	}
+
+	container, ok := findManagerContainer(containers)
+	if !ok {
+		return fmt.Errorf("no container named %q", managerContainerName)
+	}
+
+	ports, found, err := unstructured.NestedSlice(container, "ports")
+	if err != nil {
+		return fmt.Errorf("reading manager container ports: %w", err)
+	}
+	if found {
+		for _, item := range ports {
+			port, ok := item.(map[string]any)
+			if !ok || port["name"] != webhookServerPortName {
+				continue
+			}
+			if _, found := port["containerPort"]; !found {
+				return fmt.Errorf("manager port %q has no containerPort", webhookServerPortName)
+			}
+			port["containerPort"] = webhookPortPlaceholder
+			break
+		}
+		if err := unstructured.SetNestedSlice(container, ports, "ports"); err != nil {
+			return fmt.Errorf("stamping manager webhook port: %w", err)
+		}
+	}
+
+	volumeMounts, found, err := unstructured.NestedSlice(container, "volumeMounts")
+	if err != nil {
+		return fmt.Errorf("reading manager container volume mounts: %w", err)
+	}
+	if found {
+		for _, item := range volumeMounts {
+			volumeMount, ok := item.(map[string]any)
+			if !ok || volumeMount["name"] != webhookCertVolumeName {
+				continue
+			}
+			if _, found := volumeMount["mountPath"]; !found {
+				return fmt.Errorf("manager volume mount %q has no mountPath", webhookCertVolumeName)
+			}
+			volumeMount["mountPath"] = webhookCertDirPlaceholder
+			break
+		}
+		if err := unstructured.SetNestedSlice(container, volumeMounts, "volumeMounts"); err != nil {
+			return fmt.Errorf("stamping manager webhook certificate directory: %w", err)
+		}
+	}
 
 	return unstructured.SetNestedSlice(obj.Object, containers, "spec", "template", "spec", "containers")
 }
