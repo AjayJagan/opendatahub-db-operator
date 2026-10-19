@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
@@ -44,6 +45,40 @@ func TestRoleNameFor_TruncatesLongNames(t *testing.T) {
 	role := controller.RoleNameFor("ns", long)
 	g.Expect(len(role)).To(BeNumerically("<=", 63))
 	g.Expect(role).To(MatchRegexp(`_[0-9a-f]{8}$`))
+}
+
+func TestSchemaNameFor_UsesSpecOverride(t *testing.T) {
+	g := NewWithT(t)
+
+	claim := &infraApi.SchemaClaim{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "app", Name: "claim-a"},
+		Spec:       infraApi.SchemaClaimSpec{Schema: "explicit_schema"},
+	}
+	g.Expect(controller.SchemaNameFor(claim)).To(Equal("explicit_schema"))
+}
+
+func TestSchemaNameFor_DefaultIsNamespaceNameSanitized(t *testing.T) {
+	g := NewWithT(t)
+
+	claim := &infraApi.SchemaClaim{
+		ObjectMeta: metav1.ObjectMeta{Namespace: "app-ns", Name: "claim-a"},
+	}
+	g.Expect(controller.SchemaNameFor(claim)).To(Equal("app_ns_claim_a"))
+	g.Expect(controller.SchemaNameFor(claim)).NotTo(MatchRegexp(`_[0-9a-f]{8}$`))
+}
+
+func TestSchemaNameFor_HashesOnlyWhenTruncating(t *testing.T) {
+	g := NewWithT(t)
+
+	claim := &infraApi.SchemaClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "ns",
+			Name:      strings.Repeat("a", 80),
+		},
+	}
+	schema := controller.SchemaNameFor(claim)
+	g.Expect(len(schema)).To(BeNumerically("<=", 63))
+	g.Expect(schema).To(MatchRegexp(`_[0-9a-f]{8}$`))
 }
 
 func TestExternalProviderAllows_NilDenies(t *testing.T) {

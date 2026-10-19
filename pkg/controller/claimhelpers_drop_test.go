@@ -88,3 +88,66 @@ func TestShouldDropClaimDatabase_BlocksWhenShared(t *testing.T) {
 
 	g.Expect(controller.ShouldDropClaimDatabase(claim, "postgres", []infraApi.DatabaseClaim{other})).To(BeFalse())
 }
+
+func TestShouldDropClaimSchema_RequiresDelete(t *testing.T) {
+	g := NewWithT(t)
+	claim := &infraApi.SchemaClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns", UID: types.UID("uid-a")},
+		Spec: infraApi.SchemaClaimSpec{
+			Provider:       infraApi.ProviderRef{Name: "rhai-db"},
+			Schema:         "app_schema",
+			Database:       "analytics",
+			DeletionPolicy: infraApi.DeletionPolicyDelete,
+		},
+		Status: infraApi.SchemaClaimStatus{
+			Provider: "rhai-db",
+			Schema:   "app_schema",
+			Connection: infraApi.SchemaConnectionStatus{
+				Database: "analytics",
+			},
+		},
+	}
+
+	g.Expect(controller.ShouldDropClaimSchema(claim, nil)).To(BeTrue())
+
+	retain := claim.DeepCopy()
+	retain.Spec.DeletionPolicy = infraApi.DeletionPolicyRetain
+	g.Expect(controller.ShouldDropClaimSchema(retain, nil)).To(BeFalse())
+}
+
+func TestShouldDropClaimSchema_BlocksWhenShared(t *testing.T) {
+	g := NewWithT(t)
+	claim := &infraApi.SchemaClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns", UID: types.UID("uid-a")},
+		Spec: infraApi.SchemaClaimSpec{
+			Provider:       infraApi.ProviderRef{Name: "rhai-db"},
+			Schema:         "app_schema",
+			Database:       "analytics",
+			DeletionPolicy: infraApi.DeletionPolicyDelete,
+		},
+		Status: infraApi.SchemaClaimStatus{
+			Provider: "rhai-db",
+			Schema:   "app_schema",
+			Connection: infraApi.SchemaConnectionStatus{
+				Database: "analytics",
+			},
+		},
+	}
+	other := infraApi.SchemaClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "b", Namespace: "other-ns", UID: types.UID("uid-b")},
+		Spec: infraApi.SchemaClaimSpec{
+			Provider: infraApi.ProviderRef{Name: "rhai-db"},
+			Schema:   "app_schema",
+			Database: "analytics",
+		},
+		Status: infraApi.SchemaClaimStatus{
+			Provider: "rhai-db",
+			Schema:   "app_schema",
+			Connection: infraApi.SchemaConnectionStatus{
+				Database: "analytics",
+			},
+		},
+	}
+
+	g.Expect(controller.ShouldDropClaimSchema(claim, []infraApi.SchemaClaim{other})).To(BeFalse())
+}

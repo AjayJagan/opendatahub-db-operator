@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -33,6 +34,8 @@ import (
 const (
 	// maxRoleNameLen is PostgreSQL's identifier length limit.
 	maxRoleNameLen = 63
+	// maxSchemaLen is PostgreSQL's identifier length limit for schema names.
+	maxSchemaLen = 63
 )
 
 var nonIdentRe = regexp.MustCompile(`[^a-z0-9_]`)
@@ -50,6 +53,28 @@ func RoleNameFor(namespace, name string) string {
 		safe = safe[:baseMax]
 	}
 	return safe + "_" + h
+}
+
+// SchemaNameFor returns the effective schema for a SchemaClaim: spec.schema
+// when set (CEL already enforces pattern/length), otherwise the default
+// "${namespace}_${name}" sanitized to a PostgreSQL identifier. A hash suffix
+// is appended only when truncation is required to stay within 63 bytes.
+func SchemaNameFor(claim *infraApi.SchemaClaim) string {
+	if claim == nil {
+		return ""
+	}
+	if claim.Spec.Schema != "" {
+		return claim.Spec.Schema
+	}
+
+	raw := strings.ToLower(claim.Namespace + "_" + claim.Name)
+	safe := nonIdentRe.ReplaceAllString(raw, "_")
+	if len(safe) <= maxSchemaLen {
+		return safe
+	}
+
+	h := fmt.Sprintf("%x", sha256.Sum256([]byte(safe)))[:8]
+	return safe[:maxSchemaLen-9] + "_" + h
 }
 
 // NewClient loads the provider's admin connection config and opens a postgres.Client.
@@ -227,6 +252,76 @@ func ShouldDropClaimDatabase(
 // ListDatabaseClaims returns all DatabaseClaims visible to cli.
 func ListDatabaseClaims(ctx context.Context, cli client.Client) ([]infraApi.DatabaseClaim, error) {
 	list := &infraApi.DatabaseClaimList{}
+	if err := cli.List(ctx, list); err != nil {
+		return nil, err
+	}
+	return list.Items, nil
+}
+
+// ShouldDropClaimSchema reports whether cleanup may DROP SCHEMA CASCADE.
+// Requires DeletionPolicy=Delete and no other SchemaClaim still referencing
+// the same schema on the same provider database.
+func ShouldDropClaimSchema(
+	claim *infraApi.SchemaClaim,
+	others []infraApi.SchemaClaim,
+) bool {
+	if claim == nil {
+		return false
+	}
+	if claim.Spec.DeletionPolicy != infraApi.DeletionPolicyDelete {
+		return false
+	}
+	schema := claim.Status.Schema
+	if schema == "" {
+		schema = SchemaNameFor(claim)
+	}
+	if schema == "" {
+		return false
+	}
+	database := claim.Status.Connection.Database
+	if database == "" {
+		database = claim.Spec.Database
+	}
+	provider := claim.Status.Provider
+	if provider == "" {
+		provider = claim.Spec.Provider.Name
+	}
+	for i := range others {
+		other := &others[i]
+		if other.UID == claim.UID {
+			continue
+		}
+		if other.Namespace == claim.Namespace && other.Name == claim.Name {
+			continue
+		}
+		otherProvider := other.Status.Provider
+		if otherProvider == "" {
+			otherProvider = other.Spec.Provider.Name
+		}
+		if otherProvider != provider {
+			continue
+		}
+		otherSchema := other.Status.Schema
+		if otherSchema == "" {
+			otherSchema = SchemaNameFor(other)
+		}
+		if otherSchema != schema {
+			continue
+		}
+		otherDB := other.Status.Connection.Database
+		if otherDB == "" {
+			otherDB = other.Spec.Database
+		}
+		if otherDB == database {
+			return false
+		}
+	}
+	return true
+}
+
+// ListSchemaClaims returns all SchemaClaims visible to cli.
+func ListSchemaClaims(ctx context.Context, cli client.Client) ([]infraApi.SchemaClaim, error) {
+	list := &infraApi.SchemaClaimList{}
 	if err := cli.List(ctx, list); err != nil {
 		return nil, err
 	}
