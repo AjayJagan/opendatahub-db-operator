@@ -41,3 +41,24 @@ type SchemaCreateNotAllowed struct {
 func (e SchemaCreateNotAllowed) Error() string {
 	return fmt.Sprintf("creating schema %q is not allowed by the provider", e.Schema)
 }
+
+// SchemaReserved is returned when a claim targets a PostgreSQL system or
+// default schema that must never be claimed or dropped.
+type SchemaReserved struct {
+	Schema string
+}
+
+func (e SchemaReserved) Error() string {
+	return fmt.Sprintf("schema %q is reserved and cannot be claimed", e.Schema)
+}
+
+// SchemaNotOwned is returned when the target schema already exists and this
+// claim did not create it (Status.SchemaCreated is false). Binding would grant
+// the claim role privileges on another tenant's schema.
+type SchemaNotOwned struct {
+	Schema string
+}
+
+func (e SchemaNotOwned) Error() string {
+	return fmt.Sprintf("schema %q already exists and was not created by this claim", e.Schema)
+}

@@ -47,6 +47,17 @@ func TestRoleNameFor_TruncatesLongNames(t *testing.T) {
 	g.Expect(role).To(MatchRegexp(`_[0-9a-f]{8}$`))
 }
 
+func TestRoleNameForSchemaClaim_DistinctFromDatabaseClaim(t *testing.T) {
+	g := NewWithT(t)
+
+	dbRole := controller.RoleNameFor("app-ns", "claim-a")
+	scRole := controller.RoleNameForSchemaClaim("app-ns", "claim-a")
+	g.Expect(scRole).NotTo(Equal(dbRole))
+	g.Expect(scRole).To(HavePrefix("sc_"))
+	g.Expect(len(scRole)).To(BeNumerically("<=", 63))
+	g.Expect(scRole).To(Equal(controller.RoleNameForSchemaClaim("app-ns", "claim-a")))
+}
+
 func TestSchemaNameFor_UsesSpecOverride(t *testing.T) {
 	g := NewWithT(t)
 
@@ -57,17 +68,27 @@ func TestSchemaNameFor_UsesSpecOverride(t *testing.T) {
 	g.Expect(controller.SchemaNameFor(claim)).To(Equal("explicit_schema"))
 }
 
-func TestSchemaNameFor_DefaultIsNamespaceNameSanitized(t *testing.T) {
+func TestSchemaNameFor_DefaultIsCollisionResistant(t *testing.T) {
 	g := NewWithT(t)
 
 	claim := &infraApi.SchemaClaim{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "app-ns", Name: "claim-a"},
 	}
-	g.Expect(controller.SchemaNameFor(claim)).To(Equal("app_ns_claim_a"))
-	g.Expect(controller.SchemaNameFor(claim)).NotTo(MatchRegexp(`_[0-9a-f]{8}$`))
+	schema := controller.SchemaNameFor(claim)
+	g.Expect(schema).To(HavePrefix("app_ns_claim_a_"))
+	g.Expect(schema).To(MatchRegexp(`_[0-9a-f]{8}$`))
+	g.Expect(len(schema)).To(BeNumerically("<=", 63))
+	g.Expect(schema).To(Equal(controller.SchemaNameFor(claim)))
+
+	// Sanitized forms collide; unsanitized identity must still diverge.
+	abC := &infraApi.SchemaClaim{ObjectMeta: metav1.ObjectMeta{Namespace: "a-b", Name: "c"}}
+	aBC := &infraApi.SchemaClaim{ObjectMeta: metav1.ObjectMeta{Namespace: "a", Name: "b-c"}}
+	aBDotC := &infraApi.SchemaClaim{ObjectMeta: metav1.ObjectMeta{Namespace: "a", Name: "b.c"}}
+	g.Expect(controller.SchemaNameFor(abC)).NotTo(Equal(controller.SchemaNameFor(aBC)))
+	g.Expect(controller.SchemaNameFor(aBC)).NotTo(Equal(controller.SchemaNameFor(aBDotC)))
 }
 
-func TestSchemaNameFor_HashesOnlyWhenTruncating(t *testing.T) {
+func TestSchemaNameFor_TruncatesLongNames(t *testing.T) {
 	g := NewWithT(t)
 
 	claim := &infraApi.SchemaClaim{

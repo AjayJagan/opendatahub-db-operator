@@ -132,6 +132,18 @@ func (m *Controller) provisionAction(ctx context.Context, rr *odhtypes.Reconcili
 		// Terminal policy denial: do not polite-requeue; wait for a claim/provider change.
 		return odherrors.NewStopErrorW(denied)
 	}
+	if reserved, ok := errors.AsType[claimerrors.SchemaReserved](err); ok {
+		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
+			conditions.WithReason("SchemaReserved"),
+			conditions.WithMessage(reserved.Error()))
+		return odherrors.NewStopErrorW(reserved)
+	}
+	if notOwned, ok := errors.AsType[claimerrors.SchemaNotOwned](err); ok {
+		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
+			conditions.WithReason("SchemaNotOwned"),
+			conditions.WithMessage(notOwned.Error()))
+		return odherrors.NewStopErrorW(notOwned)
+	}
 	if err != nil {
 		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
 			conditions.WithError(err))
@@ -183,7 +195,7 @@ func (m *Controller) cleanupAction(ctx context.Context, rr *odhtypes.Reconciliat
 		return fmt.Errorf("instance is not a SchemaClaim")
 	}
 
-	role := dbcontroller.RoleNameFor(obj.Namespace, obj.Name)
+	role := dbcontroller.RoleNameForSchemaClaim(obj.Namespace, obj.Name)
 
 	// Never drop the finalizer while cleanup fails. Keep returning errors so
 	// reconcile retries until the role (and optional schema) are gone.

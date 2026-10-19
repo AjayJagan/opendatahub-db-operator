@@ -101,7 +101,7 @@ func TestCleanupAction_MissingRoleSkipsRoleDrop(t *testing.T) {
 func TestCleanupAction_MissingDatabaseStillDropsRole(t *testing.T) {
 	g := NewWithT(t)
 	claim, provider, secret := cleanupFixtures()
-	role := dbcontroller.RoleNameFor(claim.Namespace, claim.Name)
+	role := dbcontroller.RoleNameForSchemaClaim(claim.Namespace, claim.Name)
 	pg := &cleanupPG{roles: map[string]bool{role: true}}
 
 	err := newCleanupController(pg).cleanupAction(
@@ -144,7 +144,7 @@ func TestCleanupAction_MissingDatabaseStillCompletes(t *testing.T) {
 			Namespace: claim.Namespace,
 		},
 	}
-	role := dbcontroller.RoleNameFor(claim.Namespace, claim.Name)
+	role := dbcontroller.RoleNameForSchemaClaim(claim.Namespace, claim.Name)
 	pg := &cleanupPG{roles: map[string]bool{role: true}}
 	cli := fakeCleanupClient(t, provider, adminSecret, claim, credSecret)
 

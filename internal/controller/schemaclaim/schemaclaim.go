@@ -44,7 +44,7 @@ func NewController(cfg *moduleconfig.Config, opts ...Option) *Controller {
 	return m
 }
 
-// +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=schemaclaims,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=schemaclaims,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=schemaclaims/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=schemaclaims/finalizers,verbs=update
 // +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=databaseproviders,verbs=get;list;watch

@@ -80,8 +80,6 @@ rules:
   - databaseclaims
   - schemaclaims
   verbs:
-  - create
-  - delete
   - get
   - list
   - patch

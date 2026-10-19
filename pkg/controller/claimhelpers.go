@@ -40,12 +40,25 @@ const (
 
 var nonIdentRe = regexp.MustCompile(`[^a-z0-9_]`)
 
-// RoleNameFor derives a deterministic, PostgreSQL-safe role name from a claim's
-// namespace and name. A short hash of the original (unsanitized) identity is
-// always appended so distinct claim names that sanitize to the same string
-// (e.g. my-db vs my.db) cannot collide onto one role.
+// RoleNameFor derives a deterministic, PostgreSQL-safe role name for a
+// DatabaseClaim from namespace and name. A short hash of the unsanitized
+// identity is always appended so distinct claim names that sanitize to the
+// same string (e.g. my-db vs my.db) cannot collide onto one role.
+//
+// SchemaClaim must use RoleNameForSchemaClaim so the two kinds never share a
+// role when namespace and name match.
 func RoleNameFor(namespace, name string) string {
-	raw := fmt.Sprintf("%s_%s", namespace, name)
+	return roleNameFromRaw(fmt.Sprintf("%s_%s", namespace, name))
+}
+
+// RoleNameForSchemaClaim derives a PostgreSQL role name for a SchemaClaim.
+// The "sc_" kind prefix keeps it distinct from RoleNameFor for a DatabaseClaim
+// with the same namespace and name.
+func RoleNameForSchemaClaim(namespace, name string) string {
+	return roleNameFromRaw(fmt.Sprintf("sc_%s_%s", namespace, name))
+}
+
+func roleNameFromRaw(raw string) string {
 	safe := nonIdentRe.ReplaceAllString(raw, "_")
 	h := fmt.Sprintf("%x", sha256.Sum256([]byte(raw)))[:8]
 	baseMax := maxRoleNameLen - 9 // "_" + 8 hex
@@ -56,9 +69,10 @@ func RoleNameFor(namespace, name string) string {
 }
 
 // SchemaNameFor returns the effective schema for a SchemaClaim: spec.schema
-// when set (CEL already enforces pattern/length), otherwise the default
-// "${namespace}_${name}" sanitized to a PostgreSQL identifier. A hash suffix
-// is appended only when truncation is required to stay within 63 bytes.
+// when set (CEL already enforces pattern/length), otherwise a default derived
+// from namespace and name. A short hash of the unsanitized identity is always
+// appended so distinct claims that sanitize to the same string (e.g. a-b/c vs
+// a/b-c) cannot collide onto one schema.
 func SchemaNameFor(claim *infraApi.SchemaClaim) string {
 	if claim == nil {
 		return ""
@@ -69,12 +83,12 @@ func SchemaNameFor(claim *infraApi.SchemaClaim) string {
 
 	raw := strings.ToLower(claim.Namespace + "_" + claim.Name)
 	safe := nonIdentRe.ReplaceAllString(raw, "_")
-	if len(safe) <= maxSchemaLen {
-		return safe
+	h := fmt.Sprintf("%x", sha256.Sum256([]byte(raw)))[:8]
+	baseMax := maxSchemaLen - 9 // "_" + 8 hex
+	if len(safe) > baseMax {
+		safe = safe[:baseMax]
 	}
-
-	h := fmt.Sprintf("%x", sha256.Sum256([]byte(safe)))[:8]
-	return safe[:maxSchemaLen-9] + "_" + h
+	return safe + "_" + h
 }
 
 // NewClient loads the provider's admin connection config and opens a postgres.Client.
@@ -258,9 +272,21 @@ func ListDatabaseClaims(ctx context.Context, cli client.Client) ([]infraApi.Data
 	return list.Items, nil
 }
 
+// IsReservedSchema reports PostgreSQL system / default schemas that a claim
+// must never DROP SCHEMA CASCADE, even if Status.SchemaCreated is somehow set.
+func IsReservedSchema(schema string) bool {
+	switch strings.ToLower(schema) {
+	case "public", "pg_catalog", "information_schema", "pg_toast":
+		return true
+	default:
+		return strings.HasPrefix(strings.ToLower(schema), "pg_")
+	}
+}
+
 // ShouldDropClaimSchema reports whether cleanup may DROP SCHEMA CASCADE.
-// Requires DeletionPolicy=Delete and no other SchemaClaim still referencing
-// the same schema on the same provider database.
+// Requires DeletionPolicy=Delete, status.schemaCreated, a non-reserved schema,
+// and no other SchemaClaim still referencing the same schema on the same
+// provider database.
 func ShouldDropClaimSchema(
 	claim *infraApi.SchemaClaim,
 	others []infraApi.SchemaClaim,
@@ -271,11 +297,14 @@ func ShouldDropClaimSchema(
 	if claim.Spec.DeletionPolicy != infraApi.DeletionPolicyDelete {
 		return false
 	}
+	if !claim.Status.SchemaCreated {
+		return false
+	}
 	schema := claim.Status.Schema
 	if schema == "" {
 		schema = SchemaNameFor(claim)
 	}
-	if schema == "" {
+	if schema == "" || IsReservedSchema(schema) {
 		return false
 	}
 	database := claim.Status.Connection.Database

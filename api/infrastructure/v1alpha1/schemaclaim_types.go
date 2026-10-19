@@ -68,11 +68,11 @@ type SchemaClaimSpec struct {
 	SecretName string `json:"secretName,omitempty"`
 
 	// Schema is an optional override for the schema name. If omitted, it
-	// defaults to "${namespace}_${name}", sanitized to a valid PostgreSQL
-	// identifier (task-06). Immutable once set: changing it mid-life implies
-	// a different claim, not an update to this one -- if this proves too
-	// strict for a legitimate day-2 use case, revisit rather than silently
-	// dropping the rule.
+	// defaults to a sanitized "${namespace}_${name}" plus a short hash of the
+	// unsanitized identity so distinct claims cannot collide. Immutable once
+	// set: changing it mid-life implies a different claim, not an update to
+	// this one -- if this proves too strict for a legitimate day-2 use case,
+	// revisit rather than silently dropping the rule.
 	//
 	// +optional
 	// +kubebuilder:validation:MaxLength=63
@@ -109,8 +109,14 @@ type SchemaClaimStatus struct {
 	common.ComponentReleaseStatus `json:",inline"`
 
 	// Schema is the actual resolved schema name -- always populated, whether
-	// from spec.schema or the "${namespace}_${name}" default.
+	// from spec.schema or the collision-resistant namespace/name default.
 	Schema string `json:"schema,omitempty"`
+
+	// SchemaCreated is true when this claim created the named schema during
+	// provisioning. DeletionPolicy=Delete may drop the schema only when this
+	// is true (and no other SchemaClaim still references it).
+	// +optional
+	SchemaCreated bool `json:"schemaCreated,omitempty"`
 
 	// Connection is the resolved connection surface once Provisioned,
 	// including the effective credentials Secret name.

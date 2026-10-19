@@ -48,6 +48,7 @@ func TestEnsure_CreatesSchemaRoleAndSecret(t *testing.T) {
 	secret, err := ensure(t, claim, internalProvider(), pg)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(pg.createdSchemas).To(ContainElement("myschema"))
+	g.Expect(claim.Status.SchemaCreated).To(BeTrue())
 	g.Expect(pg.createdRoles).NotTo(BeEmpty())
 	g.Expect(pg.createdDatabases).To(BeEmpty())
 	g.Expect(string(secret.Data[postgres.SecretKeySchema])).To(Equal("myschema"))
@@ -55,6 +56,54 @@ func TestEnsure_CreatesSchemaRoleAndSecret(t *testing.T) {
 	g.Expect(secret.Annotations[postgres.AnnotationConnectionTypeProtocol]).
 		To(Equal(postgres.ConnectionTypeProtocolPostgres))
 	g.Expect(string(secret.Data[postgres.SecretKeySSLMode])).To(Equal(postgres.SSLModeDisable))
+}
+
+func TestEnsure_RejectsPreexistingSchemaWithoutOwnership(t *testing.T) {
+	g := NewWithT(t)
+	claim := sampleClaim()
+	pg := &trackingClient{
+		cfg:       providerConfig(),
+		databases: map[string]bool{"analytics": true},
+		schemas:   map[string]bool{"myschema": true},
+	}
+
+	_, err := ensure(t, claim, internalProvider(), pg)
+	g.Expect(err).To(MatchError(claimerrors.SchemaNotOwned{Schema: "myschema"}))
+	g.Expect(pg.createdSchemas).To(BeEmpty())
+	g.Expect(pg.createdRoles).To(BeEmpty())
+	g.Expect(claim.Status.SchemaCreated).To(BeFalse())
+}
+
+func TestEnsure_AllowsPreexistingSchemaWhenOwned(t *testing.T) {
+	g := NewWithT(t)
+	claim := sampleClaim()
+	claim.Status.SchemaCreated = true
+	pg := &trackingClient{
+		cfg:       providerConfig(),
+		databases: map[string]bool{"analytics": true},
+		schemas:   map[string]bool{"myschema": true},
+	}
+
+	secret, err := ensure(t, claim, internalProvider(), pg)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(pg.createdSchemas).To(BeEmpty())
+	g.Expect(claim.Status.SchemaCreated).To(BeTrue())
+	g.Expect(string(secret.Data[postgres.SecretKeySchema])).To(Equal("myschema"))
+}
+
+func TestEnsure_RejectsReservedSchema(t *testing.T) {
+	g := NewWithT(t)
+	claim := sampleClaim()
+	claim.Spec.Schema = "public"
+	pg := &trackingClient{
+		cfg:       providerConfig(),
+		databases: map[string]bool{"analytics": true},
+	}
+
+	_, err := ensure(t, claim, internalProvider(), pg)
+	g.Expect(err).To(MatchError(claimerrors.SchemaReserved{Schema: "public"}))
+	g.Expect(pg.createdSchemas).To(BeEmpty())
+	g.Expect(pg.createdRoles).To(BeEmpty())
 }
 
 func TestEnsure_MissingDatabaseIsNotCreated(t *testing.T) {
@@ -104,9 +153,11 @@ func TestEnsure_CreatesSchemaOnExternalWhenAllowed(t *testing.T) {
 		databases: map[string]bool{"analytics": true},
 	}
 
-	secret, err := ensure(t, sampleClaim(), provider, pg)
+	claim := sampleClaim()
+	secret, err := ensure(t, claim, provider, pg)
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(pg.createdSchemas).To(ContainElement("myschema"))
+	g.Expect(claim.Status.SchemaCreated).To(BeTrue())
 	g.Expect(string(secret.Data[postgres.SecretKeySchema])).To(Equal("myschema"))
 }
 

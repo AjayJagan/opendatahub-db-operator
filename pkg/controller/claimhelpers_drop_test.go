@@ -89,7 +89,7 @@ func TestShouldDropClaimDatabase_BlocksWhenShared(t *testing.T) {
 	g.Expect(controller.ShouldDropClaimDatabase(claim, "postgres", []infraApi.DatabaseClaim{other})).To(BeFalse())
 }
 
-func TestShouldDropClaimSchema_RequiresDelete(t *testing.T) {
+func TestShouldDropClaimSchema_RequiresCreatedAndDelete(t *testing.T) {
 	g := NewWithT(t)
 	claim := &infraApi.SchemaClaim{
 		ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns", UID: types.UID("uid-a")},
@@ -100,8 +100,9 @@ func TestShouldDropClaimSchema_RequiresDelete(t *testing.T) {
 			DeletionPolicy: infraApi.DeletionPolicyDelete,
 		},
 		Status: infraApi.SchemaClaimStatus{
-			Provider: "rhai-db",
-			Schema:   "app_schema",
+			Provider:      "rhai-db",
+			Schema:        "app_schema",
+			SchemaCreated: true,
 			Connection: infraApi.SchemaConnectionStatus{
 				Database: "analytics",
 			},
@@ -113,6 +114,37 @@ func TestShouldDropClaimSchema_RequiresDelete(t *testing.T) {
 	retain := claim.DeepCopy()
 	retain.Spec.DeletionPolicy = infraApi.DeletionPolicyRetain
 	g.Expect(controller.ShouldDropClaimSchema(retain, nil)).To(BeFalse())
+
+	notCreated := claim.DeepCopy()
+	notCreated.Status.SchemaCreated = false
+	g.Expect(controller.ShouldDropClaimSchema(notCreated, nil)).To(BeFalse())
+}
+
+func TestShouldDropClaimSchema_BlocksReserved(t *testing.T) {
+	g := NewWithT(t)
+	claim := &infraApi.SchemaClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "a", Namespace: "ns", UID: types.UID("uid-a")},
+		Spec: infraApi.SchemaClaimSpec{
+			Provider:       infraApi.ProviderRef{Name: "rhai-db"},
+			Schema:         "public",
+			Database:       "analytics",
+			DeletionPolicy: infraApi.DeletionPolicyDelete,
+		},
+		Status: infraApi.SchemaClaimStatus{
+			Provider:      "rhai-db",
+			Schema:        "public",
+			SchemaCreated: true,
+			Connection: infraApi.SchemaConnectionStatus{
+				Database: "analytics",
+			},
+		},
+	}
+
+	g.Expect(controller.IsReservedSchema("public")).To(BeTrue())
+	g.Expect(controller.IsReservedSchema("pg_toast")).To(BeTrue())
+	g.Expect(controller.IsReservedSchema("pg_temp_1")).To(BeTrue())
+	g.Expect(controller.IsReservedSchema("app_schema")).To(BeFalse())
+	g.Expect(controller.ShouldDropClaimSchema(claim, nil)).To(BeFalse())
 }
 
 func TestShouldDropClaimSchema_BlocksWhenShared(t *testing.T) {
@@ -126,8 +158,9 @@ func TestShouldDropClaimSchema_BlocksWhenShared(t *testing.T) {
 			DeletionPolicy: infraApi.DeletionPolicyDelete,
 		},
 		Status: infraApi.SchemaClaimStatus{
-			Provider: "rhai-db",
-			Schema:   "app_schema",
+			Provider:      "rhai-db",
+			Schema:        "app_schema",
+			SchemaCreated: true,
 			Connection: infraApi.SchemaConnectionStatus{
 				Database: "analytics",
 			},

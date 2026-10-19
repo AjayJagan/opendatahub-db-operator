@@ -83,20 +83,33 @@ func (p SchemaProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error) {
 	defer dbClient.Close()
 
 	schema := p.Schema()
+	if dbcontroller.IsReservedSchema(schema) {
+		return nil, claimerrors.SchemaReserved{Schema: schema}
+	}
 	schemaExists, err := postgres.SchemaExists(ctx, dbClient, schema)
 	if err != nil {
 		return nil, dbcontroller.WrapQuickRetry("checking schema existence", err)
 	}
-	if !schemaExists {
+	switch {
+	case schemaExists && p.Claim.Status.SchemaCreated:
+		// Reconcile of a schema this claim previously created.
+	case schemaExists:
+		// Do not grant privileges on a pre-existing schema this claim did not
+		// create (e.g. public or another tenant's schema).
+		return nil, claimerrors.SchemaNotOwned{Schema: schema}
+	default:
 		if !dbcontroller.ExternalProviderAllows(p.Provider, infraApi.ExternalCapabilityCreateSchema) {
 			return nil, claimerrors.SchemaCreateNotAllowed{Schema: schema}
 		}
 		if err := postgres.CreateSchema(ctx, dbClient, schema); err != nil {
 			return nil, dbcontroller.WrapQuickRetry("creating schema", err)
 		}
+		// Record creation only on this path so DeletionPolicy=Delete cannot
+		// drop a pre-existing schema the claim merely bound to.
+		p.Claim.Status.SchemaCreated = true
 	}
 
-	role := dbcontroller.RoleNameFor(p.Claim.Namespace, p.Claim.Name)
+	role := dbcontroller.RoleNameForSchemaClaim(p.Claim.Namespace, p.Claim.Name)
 	roleExists, err := postgres.RoleExists(ctx, p.Postgres, role)
 	if err != nil {
 		return nil, dbcontroller.WrapQuickRetry("checking role existence", err)
