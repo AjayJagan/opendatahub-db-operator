@@ -34,6 +34,7 @@ spec:
           imagePullPolicy: IfNotPresent
 {{- if .TLS.Enabled}}
           args:
+            - run-postgresql
             - -c
             - ssl=on
             - -c

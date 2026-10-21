@@ -106,16 +106,37 @@ test-e2e-setup: test-e2e-context-check ## Build/load the manager image and insta
 	$(MAKE) test-e2e-teardown
 	$(MAKE) container-build IMG="$(IMG)"
 	$(MAKE) container-load-kind IMG="$(IMG)" KIND_CLUSTER="$(KIND_CLUSTER)"
-	$(HELM) install "$(E2E_RELEASE)" config/chart \
+# The bootstrap webhook certificate needs cert-manager; provider/claim tests do not.
+	@cleanup() { \
+		setup_result=$$?; trap - EXIT; \
+		if [ -n "$$temporary_chart" ] && ! rm -rf "$$temporary_chart"; then setup_result=1; fi; \
+		if [ "$$setup_result" -ne 0 ] && [ "$$namespace_owned" -eq 1 ]; then \
+			$(KUBECTL) delete namespace "$(E2E_NAMESPACE)" --ignore-not-found --wait --timeout=5m || \
+				echo "e2e setup failed and namespace cleanup also failed" >&2; \
+		fi; \
+		exit "$$setup_result"; \
+	}; \
+	chart=config/chart; temporary_chart=""; namespace_owned=0; trap cleanup EXIT; \
+	if [ "$(E2E_CERT_MANAGER_PROFILE)" = absent ]; then \
+		temporary_chart="$$(mktemp -d)"; \
+		cp -R config/chart/. "$$temporary_chart/"; \
+		rm "$$temporary_chart/templates/cert-manager.io_v1_issuer.yaml" \
+			"$$temporary_chart/templates/cert-manager.io_v1_certificate.yaml"; \
+		$(KUBECTL) create namespace "$(E2E_NAMESPACE)"; \
+		namespace_owned=1; \
+		$(KUBECTL) create secret generic webhook-server-cert \
+			--namespace "$(E2E_NAMESPACE)" \
+			--from-literal=tls.crt=unused --from-literal=tls.key=unused; \
+		chart="$$temporary_chart"; \
+		set -- --set-string 'config.controller\.webhook\.enabled=false'; \
+	else \
+		namespace_owned=1; \
+	fi; \
+	$(HELM) install "$(E2E_RELEASE)" "$$chart" \
 		--namespace "$(E2E_NAMESPACE)" --create-namespace --atomic --wait --timeout 5m \
 		--set-string operator.image.ref="$(IMG)" \
-		--set-string operator.image.pullPolicy=IfNotPresent || { \
-			install_status=$$?; \
-			if ! $(KUBECTL) delete namespace "$(E2E_NAMESPACE)" --ignore-not-found --wait --timeout=5m; then \
-				echo "e2e setup failed and namespace $(E2E_NAMESPACE) cleanup also failed" >&2; \
-			fi; \
-			exit "$$install_status"; \
-		}
+		--set-string operator.image.pullPolicy=IfNotPresent \
+		--set-string config.postgres-image="$(E2E_INTERNAL_POSTGRES_IMAGE)" "$$@"
 
 .PHONY: test-e2e-run
 test-e2e-run: test-e2e-context-check ## Verify the Helm-deployed manager reconciles DatabaseService, then clean up.
@@ -132,7 +153,11 @@ test-e2e-run: test-e2e-context-check ## Verify the Helm-deployed manager reconci
 	ODH_E2E_NAMESPACE="$(E2E_NAMESPACE)" \
 	ODH_E2E_RELEASE="$(E2E_RELEASE)" \
 	ODH_E2E_OPERATOR_IMAGE="$(IMG)" \
-		go test ./test/e2e/... -v -timeout 10m -failfast
+	ODH_E2E_CERT_MANAGER_PROFILE="$(E2E_CERT_MANAGER_PROFILE)" \
+	ODH_E2E_EXTERNAL_ADMIN_SECRET_NAMESPACE="$(E2E_EXTERNAL_ADMIN_SECRET_NAMESPACE)" \
+	ODH_E2E_EXTERNAL_ADMIN_SECRET_NAME="$(E2E_EXTERNAL_ADMIN_SECRET_NAME)" \
+	ODH_E2E_CONSUMER_IMAGE="$(E2E_CONSUMER_IMAGE)" \
+		go test ./test/e2e/... -v -timeout 20m
 
 .PHONY: test-e2e-teardown
 test-e2e-teardown: test-e2e-context-check ## Remove the e2e DatabaseService, Helm release, and namespace.
@@ -157,6 +182,25 @@ test-e2e-context-check:
 test-e2e: ## Set up and run e2e tests.
 	$(MAKE) test-e2e-setup
 	$(MAKE) test-e2e-run
+
+.PHONY: test-e2e-providers
+test-e2e-providers: ## Run the Internal and External provider lifecycles on a Kind cluster.
+	@test -n "$(E2E_EXTERNAL_ADMIN_SECRET_NAMESPACE)" -a -n "$(E2E_EXTERNAL_ADMIN_SECRET_NAME)" || { \
+		echo "set E2E_EXTERNAL_ADMIN_SECRET_NAMESPACE and E2E_EXTERNAL_ADMIN_SECRET_NAME" >&2; exit 1; \
+	}
+	@case "$(E2E_CERT_MANAGER_PROFILE)" in present|absent) ;; *) \
+		echo "set E2E_CERT_MANAGER_PROFILE to present or absent" >&2; exit 1 ;; \
+	esac
+	$(MAKE) test-e2e-context-check
+# Remove these direct CRD prerequisites when RHOAIENG-99478 installs them as module operands.
+	$(KUBECTL) apply -f config/crd/bases/infrastructure.opendatahub.io_databaseproviders.yaml \
+		-f config/crd/bases/infrastructure.opendatahub.io_databaseclaims.yaml \
+		-f config/crd/bases/infrastructure.opendatahub.io_schemaclaims.yaml
+	$(KUBECTL) wait --for=condition=Established --timeout=60s \
+		crd/databaseproviders.infrastructure.opendatahub.io \
+		crd/databaseclaims.infrastructure.opendatahub.io \
+		crd/schemaclaims.infrastructure.opendatahub.io
+	$(MAKE) test-e2e
 
 ##@ Build
 
@@ -196,6 +240,11 @@ KIND_CLUSTER ?= db-operator-dev
 TEST_INTEGRATION_CONTEXT ?= kind-$(KIND_CLUSTER)
 E2E_NAMESPACE ?= opendatahub-db-operator-e2e
 E2E_RELEASE   ?= opendatahub-db-operator-e2e
+E2E_CERT_MANAGER_PROFILE ?=
+E2E_EXTERNAL_ADMIN_SECRET_NAMESPACE ?=
+E2E_EXTERNAL_ADMIN_SECRET_NAME ?=
+E2E_CONSUMER_IMAGE ?= postgres:16
+E2E_INTERNAL_POSTGRES_IMAGE ?= quay.io/sclorg/postgresql-16-c9s:latest
 
 .PHONY: container-load-kind
 container-load-kind: ## Load $(IMG) into a Kind cluster. `kind load docker-image` doesn't work with the podman provider.
