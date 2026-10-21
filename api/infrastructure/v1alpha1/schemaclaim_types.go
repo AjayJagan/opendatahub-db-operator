@@ -51,6 +51,15 @@ type SchemaConnectionStatus struct {
 }
 
 // SchemaClaimSpec defines the desired state of SchemaClaim.
+//
+// Field-level self == oldSelf rules do not run when an optional field is
+// removed or when it is first added; these Spec-level presence rules close
+// both gaps so a field cannot be cleared or introduced after create (same
+// pattern as DatabaseClaimSpec / DatabaseProvider optional fields).
+//
+// +kubebuilder:validation:XValidation:rule="has(oldSelf.secretName) == has(self.secretName)",message="secretName cannot be added or removed after claim creation"
+// +kubebuilder:validation:XValidation:rule="has(oldSelf.schema) == has(self.schema)",message="schema cannot be added or removed after claim creation"
+// +kubebuilder:validation:XValidation:rule="has(oldSelf.database) == has(self.database)",message="database cannot be added or removed after claim creation"
 type SchemaClaimSpec struct {
 	// Provider selects the DatabaseProvider to provision against.
 	// +kubebuilder:validation:Required
@@ -58,8 +67,10 @@ type SchemaClaimSpec struct {
 	Provider ProviderRef `json:"provider"`
 
 	// SecretName overrides the name of the credentials Secret projected in the
-	// claim namespace. If omitted, the claim name is used. Immutable once set so
-	// updates never strand credentials under an old Secret name.
+	// claim namespace. If omitted, the default is "sc-" plus the claim name so a
+	// SchemaClaim cannot collide with a DatabaseClaim of the same name.
+	// Immutable once set so updates never strand credentials under an old
+	// Secret name.
 	//
 	// +optional
 	// +kubebuilder:validation:MaxLength=253

@@ -24,10 +24,14 @@ import (
 	"slices"
 	"strings"
 
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
+	"github.com/opendatahub-io/opendatahub-db-operator/pkg/controller/claimerrors"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres"
 )
 
@@ -208,11 +212,16 @@ func ClearRoleOwnershipInDatabase(
 
 // ShouldDropClaimDatabase reports whether cleanup may DROP the claim database.
 // Requires DeletionPolicy=Delete, status.databaseCreated, a named non-default
-// database, and no other DatabaseClaim still referencing it on the same provider.
+// database, no other DatabaseClaim still referencing it on the same provider,
+// and no live SchemaClaim still targeting that database (SchemaClaims nest
+// schemas inside it; dropping would destroy their data while they remain active).
+// SchemaClaims with DeletionTimestamp set are ignored so concurrent deletes do
+// not block each other.
 func ShouldDropClaimDatabase(
 	claim *infraApi.DatabaseClaim,
 	providerDefaultDB string,
 	others []infraApi.DatabaseClaim,
+	schemaClaims []infraApi.SchemaClaim,
 ) bool {
 	if claim == nil {
 		return false
@@ -260,6 +269,22 @@ func ShouldDropClaimDatabase(
 			return false
 		}
 	}
+	for i := range schemaClaims {
+		sc := &schemaClaims[i]
+		if !sc.DeletionTimestamp.IsZero() {
+			continue
+		}
+		scProvider := sc.Status.Provider
+		if scProvider == "" {
+			scProvider = sc.Spec.Provider.Name
+		}
+		if scProvider != provider {
+			continue
+		}
+		if schemaClaimDatabase(sc, providerDefaultDB) == database {
+			return false
+		}
+	}
 	return true
 }
 
@@ -285,10 +310,14 @@ func IsReservedSchema(schema string) bool {
 
 // ShouldDropClaimSchema reports whether cleanup may DROP SCHEMA CASCADE.
 // Requires DeletionPolicy=Delete, status.schemaCreated, a non-reserved schema,
-// and no other SchemaClaim still referencing the same schema on the same
-// provider database.
+// and no other live SchemaClaim still referencing the same schema on the same
+// provider database. Peers with DeletionTimestamp set are ignored so concurrent
+// deletes of shared-schema claims do not block each other. providerDefaultDB is
+// applied when a claim omits spec.database, matching ResolveDatabase /
+// cleanupAction.
 func ShouldDropClaimSchema(
 	claim *infraApi.SchemaClaim,
+	providerDefaultDB string,
 	others []infraApi.SchemaClaim,
 ) bool {
 	if claim == nil {
@@ -307,10 +336,7 @@ func ShouldDropClaimSchema(
 	if schema == "" || IsReservedSchema(schema) {
 		return false
 	}
-	database := claim.Status.Connection.Database
-	if database == "" {
-		database = claim.Spec.Database
-	}
+	database := schemaClaimDatabase(claim, providerDefaultDB)
 	provider := claim.Status.Provider
 	if provider == "" {
 		provider = claim.Spec.Provider.Name
@@ -320,7 +346,7 @@ func ShouldDropClaimSchema(
 		if other.UID == claim.UID {
 			continue
 		}
-		if other.Namespace == claim.Namespace && other.Name == claim.Name {
+		if !other.DeletionTimestamp.IsZero() {
 			continue
 		}
 		otherProvider := other.Status.Provider
@@ -337,15 +363,21 @@ func ShouldDropClaimSchema(
 		if otherSchema != schema {
 			continue
 		}
-		otherDB := other.Status.Connection.Database
-		if otherDB == "" {
-			otherDB = other.Spec.Database
-		}
-		if otherDB == database {
+		if schemaClaimDatabase(other, providerDefaultDB) == database {
 			return false
 		}
 	}
 	return true
+}
+
+// schemaClaimDatabase returns the effective database for share/drop checks:
+// status.connection.database when set, otherwise Spec.Database resolved
+// against the provider default (empty Spec means the default).
+func schemaClaimDatabase(claim *infraApi.SchemaClaim, providerDefaultDB string) string {
+	if claim.Status.Connection.Database != "" {
+		return claim.Status.Connection.Database
+	}
+	return ResolveDatabase(claim.Spec.Database, postgres.Config{DBName: providerDefaultDB})
 }
 
 // ListSchemaClaims returns all SchemaClaims visible to cli.
@@ -355,4 +387,19 @@ func ListSchemaClaims(ctx context.Context, cli client.Client) ([]infraApi.Schema
 		return nil, err
 	}
 	return list.Items, nil
+}
+
+// RejectForeignCredentialsSecret returns SecretNotOwned when secret already
+// exists and is not controller-owned by claimUID. A missing Secret is fine.
+// SchemaClaim "foo" and DatabaseClaim "sc-foo" both default to Secret "sc-foo";
+// rejecting early avoids Postgres role/password work on another claim's Secret.
+func RejectForeignCredentialsSecret(secret *corev1.Secret, claimUID types.UID) error {
+	if secret == nil || secret.ResourceVersion == "" {
+		return nil
+	}
+	owner := metav1.GetControllerOf(secret)
+	if owner != nil && owner.UID == claimUID {
+		return nil
+	}
+	return claimerrors.SecretNotOwned{Secret: secret.Name}
 }

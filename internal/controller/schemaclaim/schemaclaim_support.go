@@ -29,16 +29,13 @@ const (
 	FinalizerName             = "infrastructure.opendatahub.io/schemaclaim-cleanup"
 )
 
+func (c *Controller) retryInterval() time.Duration {
+	return retryInterval(c.cfg)
+}
+
 // retryInterval returns the configured SchemaClaim retry interval,
 // falling back to the compiled default if it is unset (e.g. zero-value
 // Config in tests).
-func (c *Controller) retryInterval() time.Duration {
-	if c.cfg == nil || c.cfg.SchemaClaim.RetryInterval <= 0 {
-		return moduleconfig.DefaultRetryInterval
-	}
-	return c.cfg.SchemaClaim.RetryInterval
-}
-
 func retryInterval(cfg *moduleconfig.Config) time.Duration {
 	if cfg == nil || cfg.SchemaClaim.RetryInterval <= 0 {
 		return moduleconfig.DefaultRetryInterval

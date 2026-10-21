@@ -53,12 +53,25 @@ func (e SchemaReserved) Error() string {
 }
 
 // SchemaNotOwned is returned when the target schema already exists and this
-// claim did not create it (Status.SchemaCreated is false). Binding would grant
-// the claim role privileges on another tenant's schema.
+// claim cannot prove it created it (no matching PostgreSQL ownership marker,
+// or Status.SchemaCreated does not cover the requested schema). Binding would
+// grant the claim role privileges on another tenant's schema.
 type SchemaNotOwned struct {
 	Schema string
 }
 
 func (e SchemaNotOwned) Error() string {
 	return fmt.Sprintf("schema %q already exists and was not created by this claim", e.Schema)
+}
+
+// SecretNotOwned is returned when the credentials Secret already exists and is
+// not controller-owned by this claim (e.g. SchemaClaim "foo" and DatabaseClaim
+// "sc-foo" both default to Secret "sc-foo"). Using it would overwrite another
+// claim's credentials and rotate its role password.
+type SecretNotOwned struct {
+	Secret string
+}
+
+func (e SecretNotOwned) Error() string {
+	return fmt.Sprintf("credentials Secret %q already exists and is not owned by this claim", e.Secret)
 }

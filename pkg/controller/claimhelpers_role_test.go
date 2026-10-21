@@ -58,6 +58,50 @@ func TestRoleNameForSchemaClaim_DistinctFromDatabaseClaim(t *testing.T) {
 	g.Expect(scRole).To(Equal(controller.RoleNameForSchemaClaim("app-ns", "claim-a")))
 }
 
+func TestSecretNameForSchemaClaim_DistinctFromDatabaseClaim(t *testing.T) {
+	g := NewWithT(t)
+
+	sc := &infraApi.SchemaClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "app"},
+	}
+	dc := &infraApi.DatabaseClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: "foo", Namespace: "app"},
+	}
+
+	g.Expect(controller.SecretNameForSchemaClaim(sc)).To(Equal("sc-foo"))
+	g.Expect(controller.SecretNameForDatabaseClaim(dc)).To(Equal("foo"))
+	g.Expect(controller.SecretNameForSchemaClaim(sc)).
+		NotTo(Equal(controller.SecretNameForDatabaseClaim(dc)))
+}
+
+func TestSecretNameForSchemaClaim_FitsKubernetesNameLimit(t *testing.T) {
+	g := NewWithT(t)
+
+	// sc- (3) + 250 = 253: still fits without hashing.
+	exact := &infraApi.SchemaClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", 250)},
+	}
+	exactName := controller.SecretNameForSchemaClaim(exact)
+	g.Expect(exactName).To(Equal("sc-" + strings.Repeat("a", 250)))
+	g.Expect(exactName).To(HaveLen(253))
+
+	// sc- + 251 would be 254; must shorten and stay unique/stable.
+	over := &infraApi.SchemaClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", 251)},
+	}
+	overName := controller.SecretNameForSchemaClaim(over)
+	g.Expect(len(overName)).To(BeNumerically("<=", 253))
+	g.Expect(overName).To(HavePrefix("sc-"))
+	g.Expect(overName).To(MatchRegexp(`-[0-9a-f]{8}$`))
+	g.Expect(overName).To(Equal(controller.SecretNameForSchemaClaim(over)))
+
+	other := &infraApi.SchemaClaim{
+		ObjectMeta: metav1.ObjectMeta{Name: strings.Repeat("a", 250) + "b"},
+	}
+	g.Expect(controller.SecretNameForSchemaClaim(other)).NotTo(Equal(overName))
+	g.Expect(len(controller.SecretNameForSchemaClaim(other))).To(BeNumerically("<=", 253))
+}
+
 func TestSchemaNameFor_UsesSpecOverride(t *testing.T) {
 	g := NewWithT(t)
 

@@ -144,6 +144,12 @@ func (m *Controller) provisionAction(ctx context.Context, rr *odhtypes.Reconcili
 			conditions.WithMessage(notOwned.Error()))
 		return odherrors.NewStopErrorW(notOwned)
 	}
+	if secretNotOwned, ok := errors.AsType[claimerrors.SecretNotOwned](err); ok {
+		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
+			conditions.WithReason("SecretNotOwned"),
+			conditions.WithMessage(secretNotOwned.Error()))
+		return odherrors.NewStopErrorW(secretNotOwned)
+	}
 	if err != nil {
 		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
 			conditions.WithError(err))
@@ -166,7 +172,6 @@ func (m *Controller) provisionAction(ctx context.Context, rr *odhtypes.Reconcili
 	rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionTrue,
 		conditions.WithReason("SchemaProvisioned"),
 		conditions.WithMessage(fmt.Sprintf("Schema %q provisioned on database %q (provider %q)", connection.Schema, connection.Database, provider.Name)))
-	markTLS(rr, pgClient.Config())
 
 	return nil
 }
@@ -285,8 +290,17 @@ func (m *Controller) cleanupAction(ctx context.Context, rr *odhtypes.Reconciliat
 			return fmt.Errorf("clearing owned objects for role %q in database %q: %w", role, database, err)
 		}
 		if dbExists {
-			if err := postgres.RevokeSchemaPrivileges(ctx, dbClient, schema, role); err != nil {
-				return fmt.Errorf("revoking schema privileges from role %q on schema %q: %w", role, schema, err)
+			// dbExists does not imply the schema is still present (out-of-band
+			// DROP SCHEMA). Skip revoke when it is already gone so the finalizer
+			// can still drop the role and credentials Secret.
+			schemaExists, err := postgres.SchemaExists(ctx, dbClient, schema)
+			if err != nil {
+				return fmt.Errorf("checking schema %q before cleanup: %w", schema, err)
+			}
+			if schemaExists {
+				if err := postgres.RevokeSchemaPrivileges(ctx, dbClient, schema, role); err != nil {
+					return fmt.Errorf("revoking schema privileges from role %q on schema %q: %w", role, schema, err)
+				}
 			}
 		}
 		if err := postgres.RevokeDatabasePrivileges(ctx, pgClient, database, role); err != nil {
@@ -302,9 +316,24 @@ func (m *Controller) cleanupAction(ctx context.Context, rr *odhtypes.Reconciliat
 		if err != nil {
 			return fmt.Errorf("listing SchemaClaims before schema drop: %w", err)
 		}
-		if dbcontroller.ShouldDropClaimSchema(obj, others) {
-			if err := postgres.DropSchemaCascade(ctx, dbClient, schema); err != nil {
-				return fmt.Errorf("dropping schema %q: %w", schema, err)
+		if dbcontroller.ShouldDropClaimSchema(obj, providerCfg.DBName, others) {
+			// schemaCreated means this claim created a schema with this name
+			// earlier; the object currently at that name may be a replacement.
+			// Drop only when the PostgreSQL ownership marker still matches.
+			schemaExists, err := postgres.SchemaExists(ctx, dbClient, schema)
+			if err != nil {
+				return fmt.Errorf("checking schema %q before drop: %w", schema, err)
+			}
+			if schemaExists {
+				ownerUID, err := postgres.SchemaOwnerClaimUID(ctx, dbClient, schema)
+				if err != nil {
+					return fmt.Errorf("reading schema ownership marker before drop: %w", err)
+				}
+				if ownerUID == string(obj.UID) {
+					if err := postgres.DropSchemaCascade(ctx, dbClient, schema); err != nil {
+						return fmt.Errorf("dropping schema %q: %w", schema, err)
+					}
+				}
 			}
 		}
 	}
@@ -313,14 +342,25 @@ func (m *Controller) cleanupAction(ctx context.Context, rr *odhtypes.Reconciliat
 }
 
 func deleteClaimCredentialsSecret(ctx context.Context, cli client.Client, claim *infraApi.SchemaClaim) error {
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      dbcontroller.SecretNameForSchemaClaim(claim),
-			Namespace: claim.Namespace,
-		},
+	key := client.ObjectKey{
+		Name:      dbcontroller.SecretNameForSchemaClaim(claim),
+		Namespace: claim.Namespace,
 	}
+	secret := &corev1.Secret{}
+	if err := cli.Get(ctx, key, secret); err != nil {
+		return client.IgnoreNotFound(err)
+	}
+
+	// Name alone is not enough: SchemaClaim "foo" and DatabaseClaim "sc-foo"
+	// both default to Secret "sc-foo". Delete only when this claim is the
+	// controller owner (including when the claim never provisioned).
+	owner := metav1.GetControllerOf(secret)
+	if owner == nil || owner.UID != claim.UID {
+		return nil
+	}
+
 	if err := cli.Delete(ctx, secret); client.IgnoreNotFound(err) != nil {
-		return fmt.Errorf("deleting credentials Secret %s/%s: %w", secret.Namespace, secret.Name, err)
+		return fmt.Errorf("deleting credentials Secret %s/%s: %w", key.Namespace, key.Name, err)
 	}
 	return nil
 }

@@ -21,6 +21,8 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
@@ -74,6 +76,18 @@ func (p SchemaProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error) {
 		return nil, claimerrors.DatabaseNotFound{Database: database}
 	}
 
+	// Reject a colliding credentials Secret before any schema/role work.
+	// SchemaClaim "foo" and DatabaseClaim "sc-foo" both default to Secret "sc-foo".
+	secret := &corev1.Secret{}
+	secret.Name = dbcontroller.SecretNameForSchemaClaim(p.Claim)
+	secret.Namespace = p.Claim.Namespace
+	if err := p.Client.Get(ctx, client.ObjectKeyFromObject(secret), secret); client.IgnoreNotFound(err) != nil {
+		return nil, fmt.Errorf("checking credentials Secret existence: %w", err)
+	}
+	if err := dbcontroller.RejectForeignCredentialsSecret(secret, p.Claim.UID); err != nil {
+		return nil, err
+	}
+
 	dbCfg := p.ProviderConfig
 	dbCfg.DBName = database
 	dbClient, err := dbcontroller.OpenClient(ctx, dbCfg, p.ClientFactory)
@@ -83,43 +97,14 @@ func (p SchemaProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error) {
 	defer dbClient.Close()
 
 	schema := p.Schema()
-	if dbcontroller.IsReservedSchema(schema) {
-		return nil, claimerrors.SchemaReserved{Schema: schema}
-	}
-	schemaExists, err := postgres.SchemaExists(ctx, dbClient, schema)
-	if err != nil {
-		return nil, dbcontroller.WrapQuickRetry("checking schema existence", err)
-	}
-	switch {
-	case schemaExists && p.Claim.Status.SchemaCreated:
-		// Reconcile of a schema this claim previously created.
-	case schemaExists:
-		// Do not grant privileges on a pre-existing schema this claim did not
-		// create (e.g. public or another tenant's schema).
-		return nil, claimerrors.SchemaNotOwned{Schema: schema}
-	default:
-		if !dbcontroller.ExternalProviderAllows(p.Provider, infraApi.ExternalCapabilityCreateSchema) {
-			return nil, claimerrors.SchemaCreateNotAllowed{Schema: schema}
-		}
-		if err := postgres.CreateSchema(ctx, dbClient, schema); err != nil {
-			return nil, dbcontroller.WrapQuickRetry("creating schema", err)
-		}
-		// Record creation only on this path so DeletionPolicy=Delete cannot
-		// drop a pre-existing schema the claim merely bound to.
-		p.Claim.Status.SchemaCreated = true
+	if err := p.ensureSchema(ctx, dbClient, schema); err != nil {
+		return nil, err
 	}
 
 	role := dbcontroller.RoleNameForSchemaClaim(p.Claim.Namespace, p.Claim.Name)
 	roleExists, err := postgres.RoleExists(ctx, p.Postgres, role)
 	if err != nil {
 		return nil, dbcontroller.WrapQuickRetry("checking role existence", err)
-	}
-
-	secret := &corev1.Secret{}
-	secret.Name = dbcontroller.SecretNameForSchemaClaim(p.Claim)
-	secret.Namespace = p.Claim.Namespace
-	if err := p.Client.Get(ctx, client.ObjectKeyFromObject(secret), secret); client.IgnoreNotFound(err) != nil {
-		return nil, fmt.Errorf("checking credentials Secret existence: %w", err)
 	}
 
 	secretExists := secret.ResourceVersion != ""
@@ -192,4 +177,117 @@ func (p SchemaProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error) {
 	secret.SetGroupVersionKind(gvk.Secret)
 
 	return secret, nil
+}
+
+// ensureSchema creates the claim schema when missing, or confirms ownership of
+// an existing one. Reserved schemas and schemas this claim did not create are
+// rejected. Ownership is proven by a PostgreSQL marker written with CREATE
+// SCHEMA, so a failed status write or restart can recover only schemas this
+// claim created — not admin-created or Retain leftovers.
+func (p SchemaProvisioner) ensureSchema(ctx context.Context, dbClient postgres.Client, schema string) error {
+	if dbcontroller.IsReservedSchema(schema) {
+		return claimerrors.SchemaReserved{Schema: schema}
+	}
+	schemaExists, err := postgres.SchemaExists(ctx, dbClient, schema)
+	if err != nil {
+		return dbcontroller.WrapQuickRetry("checking schema existence", err)
+	}
+	database := p.Database()
+	switch {
+	case schemaExists && p.Claim.Status.SchemaCreated:
+		// SchemaCreated is ownership of the recorded schema/database only.
+		// A later Spec change that retargets SchemaNameFor / ResolveDatabase
+		// must not inherit that flag (CEL also freezes Spec field presence).
+		if recorded := p.Claim.Status.Schema; recorded != "" && recorded != schema {
+			return claimerrors.SchemaNotOwned{Schema: schema}
+		}
+		if recordedDB := p.Claim.Status.Connection.Database; recordedDB != "" && recordedDB != database {
+			return claimerrors.SchemaNotOwned{Schema: schema}
+		}
+		// Re-check the Postgres marker: the named schema may have been dropped
+		// and replaced since SchemaCreated was set.
+		ownerUID, err := postgres.SchemaOwnerClaimUID(ctx, dbClient, schema)
+		if err != nil {
+			return dbcontroller.WrapQuickRetry("reading schema ownership marker", err)
+		}
+		if ownerUID == "" || ownerUID != string(p.Claim.UID) {
+			return claimerrors.SchemaNotOwned{Schema: schema}
+		}
+		return nil
+	case schemaExists:
+		return p.claimExistingSchema(ctx, dbClient, database, schema)
+	default:
+		if !dbcontroller.ExternalProviderAllows(p.Provider, infraApi.ExternalCapabilityCreateSchema) {
+			return claimerrors.SchemaCreateNotAllowed{Schema: schema}
+		}
+		if err := postgres.CreateSchemaExclusiveWithOwner(
+			ctx, dbClient, schema, string(p.Claim.UID),
+		); err != nil {
+			if postgres.IsDuplicateSchema(err) {
+				return p.claimExistingSchema(ctx, dbClient, database, schema)
+			}
+			return dbcontroller.WrapQuickRetry("creating schema", err)
+		}
+		// Persist ownership before role/Secret work so a later failure cannot
+		// leave the schema existing with SchemaCreated unset.
+		return p.persistSchemaCreated(ctx, database, schema)
+	}
+}
+
+// claimExistingSchema recovers ownership only when the PostgreSQL schema marker
+// matches this claim's UID. Unmarked and foreign-owned schemas are rejected.
+func (p SchemaProvisioner) claimExistingSchema(
+	ctx context.Context,
+	dbClient postgres.Client,
+	database, schema string,
+) error {
+	ownerUID, err := postgres.SchemaOwnerClaimUID(ctx, dbClient, schema)
+	if err != nil {
+		return dbcontroller.WrapQuickRetry("reading schema ownership marker", err)
+	}
+	if ownerUID == "" || ownerUID != string(p.Claim.UID) {
+		return claimerrors.SchemaNotOwned{Schema: schema}
+	}
+	return p.persistSchemaCreated(ctx, database, schema)
+}
+
+// persistSchemaCreated retries Get + Status().Update for conflicts and other
+// retryable API errors. Each attempt re-fetches and checks database/schema
+// still match the CreateSchema targets. SchemaNotOwned handling is unchanged.
+func (p SchemaProvisioner) persistSchemaCreated(ctx context.Context, database, schema string) error {
+	err := retry.OnError(retry.DefaultBackoff, func(err error) bool {
+		return apierrors.IsConflict(err) ||
+			apierrors.IsServerTimeout(err) ||
+			apierrors.IsTimeout(err) ||
+			apierrors.IsTooManyRequests(err) ||
+			apierrors.IsServiceUnavailable(err) ||
+			apierrors.IsInternalError(err)
+	}, func() error {
+		fresh := &infraApi.SchemaClaim{}
+		if err := p.Client.Get(ctx, client.ObjectKeyFromObject(p.Claim), fresh); err != nil {
+			return err
+		}
+		if dbcontroller.ResolveDatabase(fresh.Spec.Database, p.ProviderConfig) != database ||
+			dbcontroller.SchemaNameFor(fresh) != schema {
+			return fmt.Errorf("claim database/schema changed after creating schema %q", schema)
+		}
+		if fresh.Status.SchemaCreated &&
+			fresh.Status.Schema == schema &&
+			(fresh.Status.Connection.Database == "" || fresh.Status.Connection.Database == database) {
+			*p.Claim = *fresh
+			return nil
+		}
+		fresh.Status.SchemaCreated = true
+		fresh.Status.Schema = schema
+		fresh.Status.Connection.Database = database
+		if err := p.Client.Status().Update(ctx, fresh); err != nil {
+			return err
+		}
+		*p.Claim = *fresh
+		return nil
+	})
+	if err != nil {
+		return dbcontroller.WrapQuickRetry("persisting schemaCreated status", err)
+	}
+	return nil
 }

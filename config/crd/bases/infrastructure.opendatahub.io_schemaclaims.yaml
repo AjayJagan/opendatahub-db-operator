@@ -46,7 +46,13 @@ spec:
           metadata:
             type: object
           spec:
-            description: SchemaClaimSpec defines the desired state of SchemaClaim.
+            description: |-
+              SchemaClaimSpec defines the desired state of SchemaClaim.
+
+              Field-level self == oldSelf rules do not run when an optional field is
+              removed or when it is first added; these Spec-level presence rules close
+              both gaps so a field cannot be cleared or introduced after create (same
+              pattern as DatabaseClaimSpec / DatabaseProvider optional fields).
             properties:
               access:
                 default: ReadWrite
@@ -156,8 +162,10 @@ spec:
               secretName:
                 description: |-
                   SecretName overrides the name of the credentials Secret projected in the
-                  claim namespace. If omitted, the claim name is used. Immutable once set so
-                  updates never strand credentials under an old Secret name.
+                  claim namespace. If omitted, the default is "sc-" plus the claim name so a
+                  SchemaClaim cannot collide with a DatabaseClaim of the same name.
+                  Immutable once set so updates never strand credentials under an old
+                  Secret name.
                 maxLength: 253
                 pattern: ^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$
                 type: string
@@ -167,6 +175,13 @@ spec:
             required:
             - provider
             type: object
+            x-kubernetes-validations:
+            - message: secretName cannot be added or removed after claim creation
+              rule: has(oldSelf.secretName) == has(self.secretName)
+            - message: schema cannot be added or removed after claim creation
+              rule: has(oldSelf.schema) == has(self.schema)
+            - message: database cannot be added or removed after claim creation
+              rule: has(oldSelf.database) == has(self.database)
           status:
             description: |-
               SchemaClaimStatus defines the observed state of SchemaClaim. Phase (human-
@@ -247,8 +262,9 @@ spec:
                   secretRef:
                     description: |-
                       SecretRef names the credentials Secret in the claim's own namespace.
-                      When spec.secretName is set, it matches that value; otherwise it falls
-                      back to the claim's own metadata.name.
+                      When spec.secretName is set, it matches that value; otherwise it is the
+                      claim-kind default (bare claim name for DatabaseClaim, "sc-"+name for
+                      SchemaClaim).
                     properties:
                       name:
                         default: ""

@@ -18,6 +18,7 @@ package schemaclaim
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"strings"
@@ -33,8 +34,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	moduleconfig "github.com/opendatahub-io/opendatahub-db-operator/pkg/config"
@@ -115,12 +118,7 @@ func TestCleanupAction_MissingDatabaseStillDropsRole(t *testing.T) {
 func TestCleanupAction_DeletesCredentialsSecret(t *testing.T) {
 	g := NewWithT(t)
 	claim, provider, adminSecret := cleanupFixtures()
-	credSecret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      dbcontroller.SecretNameForSchemaClaim(claim),
-			Namespace: claim.Namespace,
-		},
-	}
+	credSecret := ownedCredentialsSecret(t, claim)
 	cli := fakeCleanupClient(t, provider, adminSecret, claim, credSecret)
 
 	err := newCleanupController(&cleanupPG{databases: map[string]bool{"analytics": true}}).cleanupAction(
@@ -135,15 +133,38 @@ func TestCleanupAction_DeletesCredentialsSecret(t *testing.T) {
 	g.Expect(client.IgnoreNotFound(err)).To(Succeed())
 }
 
-func TestCleanupAction_MissingDatabaseStillCompletes(t *testing.T) {
+func TestCleanupAction_SkipsCredentialsSecretOwnedByOtherClaim(t *testing.T) {
 	g := NewWithT(t)
 	claim, provider, adminSecret := cleanupFixtures()
 	credSecret := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      dbcontroller.SecretNameForSchemaClaim(claim),
 			Namespace: claim.Namespace,
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: infraApi.GroupVersion.String(),
+				Kind:       infraApi.DatabaseClaimKind,
+				Name:       "sc-analytics",
+				UID:        types.UID("other-claim-uid"),
+				Controller: ptrTrue(),
+			}},
 		},
 	}
+	cli := fakeCleanupClient(t, provider, adminSecret, claim, credSecret)
+
+	err := newCleanupController(&cleanupPG{databases: map[string]bool{"analytics": true}}).cleanupAction(
+		context.Background(),
+		claimTestRequest(t, cli, claim),
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	got := &corev1.Secret{}
+	g.Expect(cli.Get(context.Background(), client.ObjectKeyFromObject(credSecret), got)).To(Succeed())
+}
+
+func TestCleanupAction_MissingDatabaseStillCompletes(t *testing.T) {
+	g := NewWithT(t)
+	claim, provider, adminSecret := cleanupFixtures()
+	credSecret := ownedCredentialsSecret(t, claim)
 	role := dbcontroller.RoleNameForSchemaClaim(claim.Namespace, claim.Name)
 	pg := &cleanupPG{roles: map[string]bool{role: true}}
 	cli := fakeCleanupClient(t, provider, adminSecret, claim, credSecret)
@@ -158,6 +179,57 @@ func TestCleanupAction_MissingDatabaseStillCompletes(t *testing.T) {
 	got := &corev1.Secret{}
 	err = cli.Get(context.Background(), client.ObjectKeyFromObject(credSecret), got)
 	g.Expect(client.IgnoreNotFound(err)).To(Succeed())
+}
+
+func TestCleanupAction_MissingSchemaStillCompletes(t *testing.T) {
+	g := NewWithT(t)
+	claim, provider, adminSecret := cleanupFixtures()
+	credSecret := ownedCredentialsSecret(t, claim)
+	role := dbcontroller.RoleNameForSchemaClaim(claim.Namespace, claim.Name)
+	// Database remains, but the schema was removed out of band. Revoke would
+	// fail if attempted; cleanup must skip it and still drop role + Secret.
+	pg := &cleanupPG{
+		databases: map[string]bool{"analytics": true},
+		roles:     map[string]bool{role: true},
+		schemas:   map[string]bool{},
+	}
+	cli := fakeCleanupClient(t, provider, adminSecret, claim, credSecret)
+
+	err := newCleanupController(pg).cleanupAction(
+		context.Background(),
+		claimTestRequest(t, cli, claim),
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(pg.schemaRevokes).To(Equal(0))
+	g.Expect(pg.droppedRoles).To(ContainElement(role))
+
+	got := &corev1.Secret{}
+	err = cli.Get(context.Background(), client.ObjectKeyFromObject(credSecret), got)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(client.IgnoreNotFound(err)).To(Succeed())
+}
+
+func TestCleanupAction_SkipsDropWhenSchemaMarkerDoesNotMatch(t *testing.T) {
+	g := NewWithT(t)
+	claim, provider, adminSecret := cleanupFixtures()
+	claim.Spec.DeletionPolicy = infraApi.DeletionPolicyDelete
+	claim.Status.SchemaCreated = true
+	credSecret := ownedCredentialsSecret(t, claim)
+	pg := &cleanupPG{
+		databases: map[string]bool{"analytics": true},
+		schemas:   map[string]bool{"app_schema": true},
+		schemaOwners: map[string]string{
+			"app_schema": "replacement-claim-uid",
+		},
+	}
+	cli := fakeCleanupClient(t, provider, adminSecret, claim, credSecret)
+
+	err := newCleanupController(pg).cleanupAction(
+		context.Background(),
+		claimTestRequest(t, cli, claim),
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(pg.droppedSchemas).To(BeEmpty())
 }
 
 func newCleanupController(pg *cleanupPG) *Controller {
@@ -191,7 +263,11 @@ func cleanupFixtures() (*infraApi.SchemaClaim, *infraApi.DatabaseProvider, *core
 		},
 	}
 	claim := &infraApi.SchemaClaim{
-		ObjectMeta: metav1.ObjectMeta{Name: "analytics", Namespace: "app"},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "analytics",
+			Namespace: "app",
+			UID:       types.UID("schema-claim-uid"),
+		},
 		Spec: infraApi.SchemaClaimSpec{
 			Provider:       infraApi.ProviderRef{Name: "rhai-db"},
 			Schema:         "app_schema",
@@ -209,6 +285,24 @@ func cleanupFixtures() (*infraApi.SchemaClaim, *infraApi.DatabaseProvider, *core
 	return claim, provider, secret
 }
 
+func ownedCredentialsSecret(t *testing.T, claim *infraApi.SchemaClaim) *corev1.Secret {
+	t.Helper()
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      dbcontroller.SecretNameForSchemaClaim(claim),
+			Namespace: claim.Namespace,
+		},
+	}
+	g := NewWithT(t)
+	g.Expect(controllerutil.SetControllerReference(claim, secret, claimTestScheme(t))).To(Succeed())
+	return secret
+}
+
+func ptrTrue() *bool {
+	v := true
+	return &v
+}
+
 func fakeCleanupClient(t *testing.T, objs ...client.Object) client.Client {
 	t.Helper()
 	return fake.NewClientBuilder().WithScheme(claimTestScheme(t)).WithObjects(objs...).Build()
@@ -216,9 +310,13 @@ func fakeCleanupClient(t *testing.T, objs ...client.Object) client.Client {
 
 // cleanupPG is a minimal postgres.Client fake for cleanupAction paths.
 type cleanupPG struct {
-	databases    map[string]bool
-	roles        map[string]bool
-	droppedRoles []string
+	databases      map[string]bool
+	schemas        map[string]bool
+	schemaOwners   map[string]string
+	roles          map[string]bool
+	droppedRoles   []string
+	droppedSchemas []string
+	schemaRevokes  int
 }
 
 func (t *cleanupPG) Config() postgres.Config { return postgres.Config{} }
@@ -227,14 +325,38 @@ func (t *cleanupPG) Ping(context.Context) error {
 	return nil
 }
 
-func (t *cleanupPG) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
-	if strings.Contains(sql, "DROP ROLE") {
-		start := strings.Index(sql, `"`)
-		end := strings.LastIndex(sql, `"`)
+func (t *cleanupPG) Exec(_ context.Context, query string, _ ...any) (pgconn.CommandTag, error) {
+	if t.schemas == nil {
+		t.schemas = map[string]bool{}
+	}
+	switch {
+	case strings.Contains(query, "DROP ROLE"):
+		start := strings.Index(query, `"`)
+		end := strings.LastIndex(query, `"`)
 		if start >= 0 && end > start {
-			name := sql[start+1 : end]
+			name := query[start+1 : end]
 			delete(t.roles, name)
 			t.droppedRoles = append(t.droppedRoles, name)
+		}
+	case strings.Contains(query, "DROP SCHEMA"):
+		name := cleanupQuotedAfter(query, "DROP SCHEMA IF EXISTS ")
+		if name == "" {
+			name = cleanupQuotedAfter(query, "DROP SCHEMA ")
+		}
+		if name != "" {
+			delete(t.schemas, name)
+			t.droppedSchemas = append(t.droppedSchemas, name)
+		}
+	case strings.Contains(query, "REVOKE") || strings.Contains(query, "ALTER DEFAULT PRIVILEGES"):
+		if strings.Contains(query, "SCHEMA ") {
+			t.schemaRevokes++
+			name := cleanupQuotedAfter(query, "SCHEMA ")
+			if name != "" && !t.schemas[name] {
+				return pgconn.CommandTag{}, &pgconn.PgError{
+					Code:    "3F000",
+					Message: "schema \"" + name + "\" does not exist",
+				}
+			}
 		}
 	}
 	return pgconn.CommandTag{}, nil
@@ -244,22 +366,57 @@ func (t *cleanupPG) Query(context.Context, string, ...any) (pgx.Rows, error) {
 	return nil, fmt.Errorf("unexpected Query")
 }
 
-func (t *cleanupPG) QueryRow(_ context.Context, sql string, args ...any) (pgx.Row, error) {
+func (t *cleanupPG) QueryRow(_ context.Context, query string, args ...any) (pgx.Row, error) {
 	if t.databases == nil {
 		t.databases = map[string]bool{}
+	}
+	if t.schemas == nil {
+		t.schemas = map[string]bool{}
+	}
+	if t.schemaOwners == nil {
+		t.schemaOwners = map[string]string{}
 	}
 	if t.roles == nil {
 		t.roles = map[string]bool{}
 	}
 	name, _ := args[0].(string)
 	switch {
-	case strings.Contains(sql, "pg_database"):
+	case strings.Contains(query, "pg_database"):
 		return cleanupBoolRow{t.databases[name]}, nil
-	case strings.Contains(sql, "pg_roles"):
+	case strings.Contains(query, "obj_description"):
+		uid := t.schemaOwners[name]
+		if uid == "" {
+			return cleanupNullStringRow{}, nil
+		}
+		return cleanupNullStringRow{
+			valid: true,
+			s:     "opendatahub.io/schemaclaim-uid=" + uid,
+		}, nil
+	case strings.Contains(query, "pg_namespace"):
+		return cleanupBoolRow{t.schemas[name]}, nil
+	case strings.Contains(query, "pg_roles"):
 		return cleanupBoolRow{t.roles[name]}, nil
 	default:
 		return cleanupBoolRow{false}, nil
 	}
+}
+
+func cleanupQuotedAfter(query, marker string) string {
+	idx := strings.Index(query, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := query[idx+len(marker):]
+	start := strings.Index(rest, `"`)
+	if start < 0 {
+		return ""
+	}
+	rest = rest[start+1:]
+	end := strings.Index(rest, `"`)
+	if end < 0 {
+		return ""
+	}
+	return rest[:end]
 }
 
 type cleanupBoolRow struct{ v bool }
@@ -270,6 +427,21 @@ func (r cleanupBoolRow) Scan(dest ...any) error {
 		return fmt.Errorf("expected *bool")
 	}
 	*ptr = r.v
+	return nil
+}
+
+type cleanupNullStringRow struct {
+	valid bool
+	s     string
+}
+
+func (r cleanupNullStringRow) Scan(dest ...any) error {
+	ns, ok := dest[0].(*sql.NullString)
+	if !ok {
+		return fmt.Errorf("expected *sql.NullString")
+	}
+	ns.Valid = r.valid
+	ns.String = r.s
 	return nil
 }
 

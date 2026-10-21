@@ -38,6 +38,7 @@ type Options struct {
 func (o Options) applyOption(target *Options) {
 	if o.cfg != nil {
 		target.cfg = o.cfg
+		target.platformRelease = o.cfg.PlatformRelease()
 	}
 	if o.Recorder != nil {
 		target.Recorder = o.Recorder

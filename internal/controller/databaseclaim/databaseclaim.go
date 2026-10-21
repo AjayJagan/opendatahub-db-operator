@@ -47,6 +47,9 @@ func NewController(cfg *moduleconfig.Config, opts ...Option) *Controller {
 // +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=databaseclaims,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=databaseclaims/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=databaseclaims/finalizers,verbs=update
+// SchemaClaims may nest in a DatabaseClaim-created database; cleanup lists them
+// before DROP DATABASE so an active SchemaClaim is not orphaned.
+// +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=schemaclaims,verbs=get;list;watch
 // +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=databaseproviders,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
 
