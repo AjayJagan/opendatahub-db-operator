@@ -26,6 +26,7 @@ COPY cmd/ cmd/
 COPY api/ api/
 COPY internal/ internal/
 COPY pkg/ pkg/
+COPY assets/ assets/
 
 # Build (FIPS-capable, matching other RHOAI Go operators)
 USER root
