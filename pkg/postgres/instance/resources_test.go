@@ -79,6 +79,8 @@ func TestResources_UseRedHatPostgresContainerContract(t *testing.T) {
 	g.Expect(mounts["data"]).To(Equal("/var/lib/pgsql/data"))
 	g.Expect(mounts["initdb"]).To(Equal("/opt/app-root/src/postgresql-init"))
 	g.Expect(mounts["tls"]).To(Equal("/var/lib/pgsql/tls"))
+	g.Expect(container.Args).NotTo(BeEmpty())
+	g.Expect(container.Args[0]).To(Equal("run-postgresql"))
 	g.Expect(container.Args).To(ContainElements(
 		"ssl_cert_file=/var/lib/pgsql/tls/tls.crt",
 		"ssl_key_file=/var/lib/pgsql/tls/tls.key",
