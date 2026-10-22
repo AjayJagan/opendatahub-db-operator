@@ -52,9 +52,22 @@ connection="$connection sslmode='$(escape_conninfo "$DB_SSLMODE")'"
 `
 
 const adminTableSetupScript = connectionScript + `
-connection="$connection sslrootcert='/etc/db-trust/ca.crt'"
-psql -X -qAt -v ON_ERROR_STOP=1 "$connection" \
-    -c 'DROP TABLE IF EXISTS public.claim_contract_test; CREATE TABLE public.claim_contract_test (value integer);'
+case "$DB_SSLMODE" in
+    verify-full)
+        connection="$connection sslrootcert='/etc/db-trust/ca.crt'"
+        ;;
+    disable)
+        ;;
+    *)
+        echo "unexpected sslmode: $DB_SSLMODE" >&2
+        exit 1
+        ;;
+esac
+psql -X -qAt -v ON_ERROR_STOP=1 -v claim_role="$CLAIM_ROLE" "$connection" <<'SQL'
+DROP TABLE IF EXISTS public.claim_contract_test;
+CREATE TABLE public.claim_contract_test (value integer);
+GRANT SELECT, INSERT ON TABLE public.claim_contract_test TO :"claim_role";
+SQL
 `
 
 const consumerScript = connectionScript + `
@@ -183,7 +196,8 @@ func TestExternalProviderClaimLifecycle(t *testing.T) {
 
 	image := envOrDefault("ODH_E2E_CONSUMER_IMAGE", "postgres:16")
 	createAdminContractTable(t, ctx, cli, restCfg, adminNamespace, adminName,
-		string(credentials.Data["dbname"]), image)
+		string(credentials.Data["dbname"]), string(credentials.Data["user"]),
+		string(adminSecret.Data["sslmode"]), image, true)
 	runConsumer(t, ctx, cli, restCfg, namespace.Name, claim.Name, image, true)
 
 	g.Expect(cli.Delete(ctx, claim, client.Preconditions{UID: &claim.UID})).To(Succeed())
@@ -211,18 +225,25 @@ func createAdminContractTable(
 	ctx context.Context,
 	cli client.Client,
 	restCfg *rest.Config,
-	namespace, secretName, databaseName, image string,
+	namespace, secretName, databaseName, claimRole, adminSSLMode, image string,
+	withCA bool,
 ) {
 	t.Helper()
-	pod := consumerPod(namespace, secretName, image, true)
+	pod := consumerPod(namespace, secretName, image, withCA)
 	pod.Name = ""
 	pod.GenerateName = "claim-contract-table-"
 	pod.Spec.Containers[0].Command = []string{"/bin/sh", "-ec", adminTableSetupScript}
+	pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{
+		Name: "CLAIM_ROLE", Value: claimRole,
+	})
 	for i := range pod.Spec.Containers[0].Env {
-		if pod.Spec.Containers[0].Env[i].Name == "DB_NAME" {
+		switch pod.Spec.Containers[0].Env[i].Name {
+		case "DB_NAME":
 			pod.Spec.Containers[0].Env[i].Value = databaseName
 			pod.Spec.Containers[0].Env[i].ValueFrom = nil
-			break
+		case "DB_SSLMODE":
+			pod.Spec.Containers[0].Env[i].Value = adminSSLMode
+			pod.Spec.Containers[0].Env[i].ValueFrom = nil
 		}
 	}
 	runPod(t, ctx, cli, restCfg, pod)

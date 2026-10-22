@@ -25,6 +25,7 @@ import (
 	. "github.com/onsi/gomega"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 	infraapi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
+	dbcontroller "github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
 	modulemanager "github.com/opendatahub-io/opendatahub-db-operator/pkg/manager"
 	"github.com/opendatahub-io/opendatahub-db-operator/test/support"
 	corev1 "k8s.io/api/core/v1"
@@ -143,6 +144,30 @@ func TestInternalProviderClaimLifecycle(t *testing.T) {
 	g.Expect(credentials.Annotations["opendatahub.io/connection-type-protocol"]).To(Equal("postgres"))
 
 	image := envOrDefault("ODH_E2E_CONSUMER_IMAGE", "postgres:16")
+	operatorNamespace := os.Getenv("ODH_E2E_NAMESPACE")
+	g.Expect(operatorNamespace).NotTo(BeEmpty(), "ODH_E2E_NAMESPACE must name the operator namespace")
+	internalAdminSecret := &corev1.Secret{}
+	g.Expect(cli.Get(ctx, client.ObjectKey{
+		Namespace: operatorNamespace,
+		Name:      dbcontroller.InternalAdminSecretName(provider.Name),
+	}, internalAdminSecret)).To(Succeed())
+	adminSecretCopy := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{GenerateName: "claim-contract-admin-", Namespace: namespace.Name},
+		Type:       internalAdminSecret.Type,
+		Data:       internalAdminSecret.Data,
+	}
+	g.Expect(cli.Create(ctx, adminSecretCopy)).To(Succeed())
+	t.Cleanup(func() {
+		cleanupCtx, done := context.WithTimeout(context.Background(), 30*time.Second)
+		defer done()
+		err := cli.Delete(cleanupCtx, adminSecretCopy, client.Preconditions{UID: &adminSecretCopy.UID})
+		if err != nil && !apierrors.IsNotFound(err) && !apierrors.IsConflict(err) {
+			t.Errorf("cleaning temporary internal admin Secret: %v", err)
+		}
+	})
+	createAdminContractTable(t, ctx, cli, restCfg, namespace.Name,
+		adminSecretCopy.Name, string(credentials.Data["dbname"]),
+		string(credentials.Data["user"]), expectedSSLMode, image, tlsEnabled)
 	runConsumer(t, ctx, cli, restCfg, namespace.Name, claim.Name, image, tlsEnabled)
 
 	g.Expect(cli.Delete(ctx, claim, client.Preconditions{UID: &claim.UID})).To(Succeed())
