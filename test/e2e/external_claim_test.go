@@ -38,7 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const consumerScript = `
+const connectionScript = `
 set -eu
 escape_conninfo() {
     printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e "s/'/\\\\'/g"
@@ -49,6 +49,15 @@ connection="$connection user='$(escape_conninfo "$DB_USER")'"
 connection="$connection password='$(escape_conninfo "$DB_PASSWORD")'"
 connection="$connection dbname='$(escape_conninfo "$DB_NAME")'"
 connection="$connection sslmode='$(escape_conninfo "$DB_SSLMODE")'"
+`
+
+const adminTableSetupScript = connectionScript + `
+connection="$connection sslrootcert='/etc/db-trust/ca.crt'"
+psql -X -qAt -v ON_ERROR_STOP=1 "$connection" \
+    -c 'DROP TABLE IF EXISTS public.claim_contract_test; CREATE TABLE public.claim_contract_test (value integer);'
+`
+
+const consumerScript = connectionScript + `
 case "$DB_SSLMODE" in
     verify-full)
         connection="$connection sslrootcert='/etc/db-trust/ca.crt'"
@@ -62,9 +71,8 @@ case "$DB_SSLMODE" in
         exit 1
         ;;
 esac
-query='CREATE TEMP TABLE claim_contract_test (value integer);'
-query="$query INSERT INTO claim_contract_test VALUES (42);"
-query="$query SELECT ssl, (SELECT value FROM claim_contract_test)"
+query='INSERT INTO public.claim_contract_test VALUES (42);'
+query="$query SELECT ssl, (SELECT value FROM public.claim_contract_test)"
 query="$query FROM pg_stat_ssl WHERE pid = pg_backend_pid()"
 result=$(psql -X -qAt -v ON_ERROR_STOP=1 "$connection" -c "$query")
 test "$result" = "$expected"
@@ -174,6 +182,8 @@ func TestExternalProviderClaimLifecycle(t *testing.T) {
 	g.Expect(credentials.Annotations["opendatahub.io/connection-type-protocol"]).To(Equal("postgres"))
 
 	image := envOrDefault("ODH_E2E_CONSUMER_IMAGE", "postgres:16")
+	createAdminContractTable(t, ctx, cli, restCfg, adminNamespace, adminName,
+		string(credentials.Data["dbname"]), image)
 	runConsumer(t, ctx, cli, restCfg, namespace.Name, claim.Name, image, true)
 
 	g.Expect(cli.Delete(ctx, claim, client.Preconditions{UID: &claim.UID})).To(Succeed())
@@ -193,14 +203,46 @@ func runConsumer(
 	withCA bool,
 ) {
 	t.Helper()
+	runPod(t, ctx, cli, restCfg, consumerPod(namespace, secretName, image, withCA))
+}
+
+func createAdminContractTable(
+	t *testing.T,
+	ctx context.Context,
+	cli client.Client,
+	restCfg *rest.Config,
+	namespace, secretName, databaseName, image string,
+) {
+	t.Helper()
+	pod := consumerPod(namespace, secretName, image, true)
+	pod.Name = ""
+	pod.GenerateName = "claim-contract-table-"
+	pod.Spec.Containers[0].Command = []string{"/bin/sh", "-ec", adminTableSetupScript}
+	for i := range pod.Spec.Containers[0].Env {
+		if pod.Spec.Containers[0].Env[i].Name == "DB_NAME" {
+			pod.Spec.Containers[0].Env[i].Value = databaseName
+			pod.Spec.Containers[0].Env[i].ValueFrom = nil
+			break
+		}
+	}
+	runPod(t, ctx, cli, restCfg, pod)
+}
+
+func runPod(
+	t *testing.T,
+	ctx context.Context,
+	cli client.Client,
+	restCfg *rest.Config,
+	pod *corev1.Pod,
+) {
+	t.Helper()
 	g := NewWithT(t)
-	pod := consumerPod(namespace, secretName, image, withCA)
 	g.Expect(cli.Create(ctx, pod)).To(Succeed())
 	t.Cleanup(func() {
 		cleanupCtx, done := context.WithTimeout(context.Background(), 30*time.Second)
 		defer done()
 		if err := cli.Delete(cleanupCtx, pod); err != nil && !apierrors.IsNotFound(err) {
-			t.Errorf("cleaning consumer pod: %v", err)
+			t.Errorf("cleaning pod %s/%s: %v", pod.Namespace, pod.Name, err)
 		}
 	})
 
@@ -213,7 +255,7 @@ func runConsumer(
 		case corev1.PodSucceeded:
 			return true, nil
 		case corev1.PodFailed:
-			return false, fmt.Errorf("consumer pod failed: %v", current.Status.ContainerStatuses)
+			return false, fmt.Errorf("pod failed: %v", current.Status.ContainerStatuses)
 		default:
 			return false, nil
 		}
@@ -223,9 +265,9 @@ func runConsumer(
 		defer logDone()
 		logs, logErr := consumerLogs(logCtx, restCfg, pod.Namespace, pod.Name)
 		if logErr != nil {
-			t.Fatalf("waiting for consumer: %v; reading logs: %v", err, logErr)
+			t.Fatalf("waiting for pod %s/%s: %v; reading logs: %v", pod.Namespace, pod.Name, err, logErr)
 		}
-		t.Fatalf("waiting for consumer: %v; logs: %s", err, logs)
+		t.Fatalf("waiting for pod %s/%s: %v; logs: %s", pod.Namespace, pod.Name, err, logs)
 	}
 }
 
