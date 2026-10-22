@@ -244,7 +244,7 @@ E2E_CERT_MANAGER_PROFILE ?=
 E2E_EXTERNAL_ADMIN_SECRET_NAMESPACE ?=
 E2E_EXTERNAL_ADMIN_SECRET_NAME ?=
 E2E_CONSUMER_IMAGE ?= postgres:16
-E2E_INTERNAL_POSTGRES_IMAGE ?= quay.io/sclorg/postgresql-16-c9s:latest
+E2E_INTERNAL_POSTGRES_IMAGE ?= quay.io/sclorg/postgresql-16-c9s@sha256:66566a27e08ec28d739c5fc54dcd47a4f0b505682d469589e9d493ae0b7bc9ab
 
 .PHONY: container-load-kind
 container-load-kind: ## Load $(IMG) into a Kind cluster. `kind load docker-image` doesn't work with the podman provider.
