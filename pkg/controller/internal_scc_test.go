@@ -17,14 +17,18 @@ limitations under the License.
 package controller
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	. "github.com/onsi/gomega"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/postgres/instance"
+	"github.com/opendatahub-io/opendatahub-db-operator/pkg/resources/gvk"
 	securityv1 "github.com/openshift/api/security/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 func TestDesiredInternalPostgresSCC_UID26Contract(t *testing.T) {
@@ -98,4 +102,33 @@ func TestMaxInternalProviderNameLength_FitsDerivedRoleBinding(t *testing.T) {
 	name := strings.Repeat("a", MaxInternalProviderNameLength)
 	g.Expect(InternalSCCRoleBindingName(name)).To(HaveLen(63))
 	g.Expect(InternalServiceAccountName(name)).To(HaveLen(MaxInternalProviderNameLength + len("-postgres")))
+}
+
+func TestEnsureInternalPostgresSCC_DoesNotCreateWhenMissing(t *testing.T) {
+	g := NewWithT(t)
+	cli := fake.NewClientBuilder().Build()
+
+	err := EnsureInternalPostgresSCC(context.Background(), cli, true)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("not found"))
+
+	list := &unstructured.UnstructuredList{}
+	list.SetGroupVersionKind(gvk.SecurityContextConstraints.GroupVersion().WithKind("SecurityContextConstraintsList"))
+	g.Expect(cli.List(context.Background(), list)).To(Succeed())
+	g.Expect(list.Items).To(BeEmpty())
+}
+
+func TestEnsureInternalPostgresSCC_RejectsUnownedNameCollision(t *testing.T) {
+	g := NewWithT(t)
+	cli := fake.NewClientBuilder().Build()
+
+	collision := &unstructured.Unstructured{}
+	collision.SetGroupVersionKind(gvk.SecurityContextConstraints)
+	collision.SetName(InternalPostgresSCCName)
+	g.Expect(cli.Create(context.Background(), collision)).To(Succeed())
+
+	err := EnsureInternalPostgresSCC(context.Background(), cli, true)
+	g.Expect(err).To(HaveOccurred())
+	g.Expect(err.Error()).To(ContainSubstring("not owned"))
+	g.Expect(err.Error()).To(ContainSubstring(InternalPostgresSCCOwnedLabelKey))
 }

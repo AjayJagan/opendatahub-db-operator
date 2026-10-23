@@ -84,9 +84,8 @@ func (m *Controller) reconcileInternalAction(
 	if err != nil {
 		return fmt.Errorf("checking SecurityContextConstraints API: %w", err)
 	}
-	// SCC must exist before the StatefulSet is admitted on OpenShift.
-	// SecurityContextConstraints is not in deploy ApplyOrder's known list, so
-	// apply it (and the shared use ClusterRole) imperatively here.
+	// On OpenShift the install-time SCC must already exist before the
+	// StatefulSet is admitted. The reconciler verifies; it does not create.
 	if err := dbcontroller.EnsureInternalPostgresSCC(ctx, rr.Client, sccAvailable); err != nil {
 		return fmt.Errorf("ensuring Internal Postgres SCC: %w", err)
 	}

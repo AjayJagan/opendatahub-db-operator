@@ -18,7 +18,6 @@ package controller
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"github.com/opendatahub-io/odh-platform-utilities/framework/cluster"
@@ -36,11 +35,34 @@ import (
 const (
 	// InternalPostgresSCCName is the shared cluster-scoped SCC for Internal
 	// Postgres pods (UID/GID 26). One SCC serves all Internal providers.
+	// Install creates it (Helm chart / config/openshift); the reconciler
+	// only verifies it exists.
 	InternalPostgresSCCName = "odh-db-internal-postgres"
 
 	// InternalPostgresSCCClusterRoleName grants use of InternalPostgresSCCName.
+	// Install creates it; the reconciler binds provider SAs via RoleBinding.
 	InternalPostgresSCCClusterRoleName = "odh-db-internal-postgres"
+
+	// InternalPostgresSCCOwnedLabelKey marks install-time SCC/ClusterRole
+	// objects owned by this module. Used to detect name collisions with
+	// unrelated cluster objects that reuse the same name.
+	InternalPostgresSCCOwnedLabelKey = "db.infrastructure.opendatahub.io/internal-postgres-scc"
+
+	// InternalPostgresSCCOwnedLabelValue is the expected value for
+	// InternalPostgresSCCOwnedLabelKey.
+	InternalPostgresSCCOwnedLabelValue = "owned"
 )
+
+// internalPostgresSCCOwnedLabels is applied to install-time SCC and
+// ClusterRole manifests. Keep in sync with config/openshift/*.yaml.
+func internalPostgresSCCOwnedLabels() map[string]string {
+	return map[string]string{
+		InternalPostgresSCCOwnedLabelKey: InternalPostgresSCCOwnedLabelValue,
+		"app.kubernetes.io/name":         InternalPostgresSCCName,
+		"app.kubernetes.io/part-of":      "opendatahub-db-operator",
+		"app.kubernetes.io/component":    "internal-postgres-scc",
+	}
+}
 
 // SecurityContextConstraintsAvailable reports whether the OpenShift SCC API is
 // present. Kind and vanilla Kubernetes return false.
@@ -49,7 +71,8 @@ func SecurityContextConstraintsAvailable(cli client.Client) (bool, error) {
 }
 
 // DesiredInternalPostgresSCC returns the restricted-v2-shaped SCC limited to
-// RHEL postgresql UID/GID 26.
+// RHEL postgresql UID/GID 26. Keep in sync with
+// config/openshift/internal_postgres_scc.yaml.
 func DesiredInternalPostgresSCC() *securityv1.SecurityContextConstraints {
 	uid := instance.InternalPostgresUID
 	idRange := []securityv1.IDRange{{Min: uid, Max: uid}}
@@ -59,7 +82,8 @@ func DesiredInternalPostgresSCC() *securityv1.SecurityContextConstraints {
 			Kind:       gvk.SecurityContextConstraints.Kind,
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: InternalPostgresSCCName,
+			Name:   InternalPostgresSCCName,
+			Labels: internalPostgresSCCOwnedLabels(),
 		},
 		AllowPrivilegedContainer: false,
 		AllowHostDirVolumePlugin: false,
@@ -102,6 +126,7 @@ func DesiredInternalPostgresSCC() *securityv1.SecurityContextConstraints {
 }
 
 // DesiredInternalPostgresSCCClusterRole grants use of the shared Internal SCC.
+// Keep in sync with config/openshift/internal_postgres_scc_clusterrole.yaml.
 func DesiredInternalPostgresSCCClusterRole() *rbacv1.ClusterRole {
 	return &rbacv1.ClusterRole{
 		TypeMeta: metav1.TypeMeta{
@@ -109,7 +134,8 @@ func DesiredInternalPostgresSCCClusterRole() *rbacv1.ClusterRole {
 			Kind:       "ClusterRole",
 		},
 		ObjectMeta: metav1.ObjectMeta{
-			Name: InternalPostgresSCCClusterRoleName,
+			Name:   InternalPostgresSCCClusterRoleName,
+			Labels: internalPostgresSCCOwnedLabels(),
 		},
 		Rules: []rbacv1.PolicyRule{{
 			APIGroups:     []string{gvk.SecurityContextConstraints.Group},
@@ -150,95 +176,34 @@ func DesiredInternalPostgresSCCRoleBinding(namespace, serviceAccountName, provid
 	}
 }
 
-// EnsureInternalPostgresSCC applies the shared SCC and use ClusterRole when
-// available is true. Both are cluster-scoped and must not carry a
-// DatabaseProvider owner reference. Callers must pass a single discovery
-// result shared with RoleBinding creation.
+// EnsureInternalPostgresSCC verifies the install-time SCC exists when the
+// OpenShift SCC API is available. The chart (or config/openshift) creates the
+// SCC and use ClusterRole; the reconciler must not create them. A same-named
+// SCC without the ownership label is treated as a collision and fails clearly.
 func EnsureInternalPostgresSCC(ctx context.Context, cli client.Client, available bool) error {
 	if !available {
 		return nil
 	}
 
-	if err := ensureSCC(ctx, cli, DesiredInternalPostgresSCC()); err != nil {
-		return fmt.Errorf("ensuring Internal Postgres SCC %s: %w", InternalPostgresSCCName, err)
-	}
-	if err := ensureClusterRole(ctx, cli, DesiredInternalPostgresSCCClusterRole()); err != nil {
-		return fmt.Errorf("ensuring Internal Postgres SCC ClusterRole %s: %w", InternalPostgresSCCClusterRoleName, err)
-	}
-	return nil
-}
-
-func ensureClusterRole(ctx context.Context, cli client.Client, desired *rbacv1.ClusterRole) error {
-	return ensureObject(ctx, cli, desired, &rbacv1.ClusterRole{}, func(live client.Object) {
-		live.(*rbacv1.ClusterRole).Rules = desired.Rules
-	})
-}
-
-func ensureSCC(ctx context.Context, cli client.Client, desired *securityv1.SecurityContextConstraints) error {
-	raw, err := json.Marshal(desired)
-	if err != nil {
-		return fmt.Errorf("marshaling SCC: %w", err)
-	}
-	u := &unstructured.Unstructured{}
-	if err := u.UnmarshalJSON(raw); err != nil {
-		return fmt.Errorf("decoding SCC unstructured: %w", err)
-	}
-	u.SetGroupVersionKind(gvk.SecurityContextConstraints)
-
 	live := &unstructured.Unstructured{}
 	live.SetGroupVersionKind(gvk.SecurityContextConstraints)
-	return ensureObject(ctx, cli, u, live, func(existing client.Object) {
-		dst := existing.(*unstructured.Unstructured)
-		rv := dst.GetResourceVersion()
-		uid := dst.GetUID()
-		dst.Object = u.DeepCopy().Object
-		dst.SetResourceVersion(rv)
-		dst.SetUID(uid)
-		dst.SetGroupVersionKind(gvk.SecurityContextConstraints)
-	})
-}
-
-// ensureObject creates desired when missing, otherwise patches live after
-// mutate copies desired fields onto a deep copy of live. Concurrent Creates
-// are ignored (AlreadyExists) and followed by a get+patch. Patches use
-// optimistic locking so stale resourceVersions fail instead of silently
-// overwriting.
-func ensureObject(
-	ctx context.Context,
-	cli client.Client,
-	desired client.Object,
-	live client.Object,
-	mutate func(live client.Object),
-) error {
-	key := client.ObjectKeyFromObject(desired)
-	err := cli.Get(ctx, key, live)
-	switch {
-	case apierrors.IsNotFound(err):
-		if err := cli.Create(ctx, desired); err != nil {
-			if !apierrors.IsAlreadyExists(err) {
-				return err
-			}
-			if err := cli.Get(ctx, key, live); err != nil {
-				return err
-			}
-		} else {
-			return nil
-		}
-	case err != nil:
-		return err
+	err := cli.Get(ctx, client.ObjectKey{Name: InternalPostgresSCCName}, live)
+	if apierrors.IsNotFound(err) {
+		return fmt.Errorf(
+			"SecurityContextConstraints %q not found; install the OpenShift chart resources or apply config/openshift",
+			InternalPostgresSCCName,
+		)
 	}
-
-	return patchLive(ctx, cli, live, mutate)
-}
-
-func patchLive(
-	ctx context.Context,
-	cli client.Client,
-	live client.Object,
-	mutate func(live client.Object),
-) error {
-	base := live.DeepCopyObject().(client.Object)
-	patched := live.DeepCopyObject().(client.Object)
-	mutate(patched)
-	return cli.Patch(ctx, patched, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+	if err != nil {
+		return fmt.Errorf("getting SecurityContextConstraints %s: %w", InternalPostgresSCCName, err)
+	}
+	if live.GetLabels()[InternalPostgresSCCOwnedLabelKey] != InternalPostgresSCCOwnedLabelValue {
+		return fmt.Errorf(
+			"SecurityContextConstraints %q exists but is not owned by opendatahub-db-operator (missing label %s=%s); resolve the name collision before continuing",
+			InternalPostgresSCCName,
+			InternalPostgresSCCOwnedLabelKey,
+			InternalPostgresSCCOwnedLabelValue,
+		)
+	}
+	return nil
 }

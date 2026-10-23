@@ -60,14 +60,10 @@ func NewController(cfg *moduleconfig.Config, opts ...Option) *Controller {
 // +kubebuilder:rbac:groups=apps,resources=statefulsets,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims;services;configmaps;secrets;serviceaccounts,verbs=get;list;watch
 // +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=rolebindings,verbs=get;list;watch
-// Cluster-scoped SCC and the shared use ClusterRole are applied by the
-// reconciler (not the namespaced writer RoleBinding). create cannot take
-// resourceNames; get/patch/use are limited to the managed SCC. OpenShift
-// refuses ClusterRole rules that grant SCC use unless the creator already
-// holds use on that SCC (privilege-escalation check).
-// +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,verbs=create
-// +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,resourceNames=odh-db-internal-postgres,verbs=get;patch;use
-// +kubebuilder:rbac:groups=rbac.authorization.k8s.io,resources=clusterroles,verbs=create;get;patch
+// Install creates the shared SCC and use ClusterRole (Helm / config/openshift).
+// The reconciler only gets/uses the named SCC so RoleBindings can grant use
+// (OpenShift privilege-escalation check) and can fail clearly if install skipped the SCC.
+// +kubebuilder:rbac:groups=security.openshift.io,resources=securitycontextconstraints,resourceNames=odh-db-internal-postgres,verbs=get;use
 // +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch
 // +kubebuilder:rbac:groups=cert-manager.io,resources=issuers;certificates,verbs=get;list;watch
 
