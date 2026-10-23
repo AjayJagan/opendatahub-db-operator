@@ -10,6 +10,7 @@ rules:
   - persistentvolumeclaims
   - secrets
   - services
+  - serviceaccounts
   verbs:
   - create
   - get
@@ -18,6 +19,14 @@ rules:
   - apps
   resources:
   - statefulsets
+  verbs:
+  - create
+  - get
+  - patch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
   verbs:
   - create
   - get
@@ -54,6 +63,7 @@ rules:
   resources:
   - configmaps
   - persistentvolumeclaims
+  - serviceaccounts
   - services
   verbs:
   - get
@@ -160,6 +170,38 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - clusterroles
+  verbs:
+  - create
+  - get
+  - patch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - security.openshift.io
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - create
+- apiGroups:
+  - security.openshift.io
+  resourceNames:
+  - odh-db-internal-postgres
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - get
+  - patch
+  - use
 - apiGroups:
   - services.platform.opendatahub.io
   resources:

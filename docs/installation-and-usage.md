@@ -75,8 +75,12 @@ spec:
 
 Apply the provider manifest with `oc apply -f databaseprovider.yaml`.
 
-Internal providers are single-instance PostgreSQL services. For an administrator-managed database,
-configure an External provider with a connection Secret instead. See the [provider API](../api/infrastructure/v1alpha1/databaseprovider_types.go)
+Internal providers are single-instance PostgreSQL services. On OpenShift, the operator
+creates a dedicated ServiceAccount and a SecurityContextConstraints limited to UID/GID 26
+for the Postgres pod. On Kind or vanilla Kubernetes the SCC step is skipped.
+
+For an administrator-managed database, configure an External provider with a connection Secret
+instead. See the [provider API](../api/infrastructure/v1alpha1/databaseprovider_types.go)
 for the supported fields.
 
 ## Request a database
