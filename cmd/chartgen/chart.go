@@ -148,7 +148,28 @@ func renderGroup(
 		parts = append(parts, transformed)
 	}
 
-	return strings.Join(parts, "\n---\n"), nil
+	content := strings.Join(parts, "\n---\n")
+	if resourceGVK == gvk.SecurityContextConstraints {
+		// Kind and vanilla Kubernetes lack this API; skip at install time.
+		return wrapOpenShiftAPIGuard(content), nil
+	}
+	return content, nil
+}
+
+// wrapOpenShiftAPIGuard renders the content when either the OpenShift SCC API
+// is discoverable (standalone helm install/upgrade against a live cluster) or
+// Values.openshift.securityContextConstraints is true.
+//
+// The ODH platform operator renders charts offline via renderer-helm with
+// nil Capabilities (DefaultCapabilities only), so Capabilities alone would
+// skip the SCC on OpenShift. Module handlers set the Values flag for that path.
+func wrapOpenShiftAPIGuard(content string) string {
+	const (
+		begin = "{{- if or .Values.openshift.securityContextConstraints" +
+			" (.Capabilities.APIVersions.Has \"security.openshift.io/v1\") }}\n"
+		end = "\n{{- end }}\n"
+	)
+	return begin + content + end
 }
 
 var stripLabelKeys = []string{

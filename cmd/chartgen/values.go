@@ -51,10 +51,12 @@ const (
 // Values defines the Helm chart values structure.
 type Values struct {
 	// NameOverride overrides the chart name used by the "name" template helper.
-	NameOverride string `json:"nameOverride,omitempty"`
+	// Empty string is emitted so ODH's Strict helm renderer can resolve the key.
+	NameOverride string `json:"nameOverride"`
 
 	// FullnameOverride overrides the release fullname used by the "fullname" template helper.
-	FullnameOverride string `json:"fullnameOverride,omitempty"`
+	// Empty string is emitted so ODH's Strict helm renderer can resolve the key.
+	FullnameOverride string `json:"fullnameOverride"`
 
 	// Operator configures the operator Deployment itself.
 	Operator OperatorSpec `json:"operator"`
@@ -68,9 +70,21 @@ type Values struct {
 	// Platform values are written explicitly into the controller ConfigMap.
 	Platform PlatformSpec `json:"platform"`
 
+	// OpenShift controls OpenShift-only install-time resources. Defaults to
+	// false so Kind / vanilla Kubernetes chart installs omit the SCC; set
+	// true when the chart is rendered offline (ODH operator path) on OpenShift.
+	OpenShift OpenShiftSpec `json:"openshift"`
+
 	// Config provides additional controller configuration entries that are
 	// merged into the controller ConfigMap.
 	Config map[string]string `json:"config"`
+}
+
+// OpenShiftSpec toggles OpenShift-specific chart resources.
+type OpenShiftSpec struct {
+	// SecurityContextConstraints installs the shared Internal Postgres SCC
+	// and is also implied when Capabilities includes security.openshift.io/v1.
+	SecurityContextConstraints bool `json:"securityContextConstraints"`
 }
 
 // OperatorSpec configures the operator Deployment.
@@ -111,10 +125,11 @@ type ResourceSpec struct {
 // ServiceAccountSpec configures the operator's ServiceAccount.
 type ServiceAccountSpec struct {
 	// Name overrides the ServiceAccount name (defaults to release fullname).
-	Name string `json:"name,omitempty"`
+	// Empty string is emitted so ODH's Strict helm renderer can resolve the key.
+	Name string `json:"name"`
 
 	// Annotations are additional annotations on the ServiceAccount.
-	Annotations map[string]string `json:"annotations,omitempty"`
+	Annotations map[string]string `json:"annotations"`
 }
 
 // ImagePullSecretRef matches the pod imagePullSecrets item shape.
@@ -142,11 +157,19 @@ func DefaultValues() Values {
 				},
 			},
 		},
-		ServiceAccount:   ServiceAccountSpec{},
+		NameOverride:     "",
+		FullnameOverride: "",
+		ServiceAccount: ServiceAccountSpec{
+			Name:        "",
+			Annotations: map[string]string{},
+		},
 		ImagePullSecrets: []ImagePullSecretRef{},
 		Platform: PlatformSpec{
 			Type:    "OpenDataHub",
 			Version: "",
+		},
+		OpenShift: OpenShiftSpec{
+			SecurityContextConstraints: false,
 		},
 		Config: map[string]string{},
 	}

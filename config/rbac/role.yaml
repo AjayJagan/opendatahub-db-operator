@@ -13,6 +13,7 @@ rules:
   resources:
   - configmaps
   - persistentvolumeclaims
+  - serviceaccounts
   - services
   verbs:
   - get
@@ -119,6 +120,23 @@ rules:
   - get
   - list
   - watch
+- apiGroups:
+  - rbac.authorization.k8s.io
+  resources:
+  - rolebindings
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - security.openshift.io
+  resourceNames:
+  - odh-db-internal-postgres
+  resources:
+  - securitycontextconstraints
+  verbs:
+  - get
+  - use
 - apiGroups:
   - services.platform.opendatahub.io
   resources:

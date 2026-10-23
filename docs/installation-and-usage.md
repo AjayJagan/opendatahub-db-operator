@@ -75,8 +75,17 @@ spec:
 
 Apply the provider manifest with `oc apply -f databaseprovider.yaml`.
 
-Internal providers are single-instance PostgreSQL services. For an administrator-managed database,
-configure an External provider with a connection Secret instead. See the [provider API](../api/infrastructure/v1alpha1/databaseprovider_types.go)
+Internal providers are single-instance PostgreSQL services. On OpenShift, the Helm chart
+installs a shared SecurityContextConstraints and use ClusterRole limited to UID/GID 26;
+the operator creates a dedicated ServiceAccount per provider and binds it to that SCC.
+The SCC template is included when the cluster advertises `security.openshift.io/v1`
+(standalone `helm install`/`upgrade`) or when
+`openshift.securityContextConstraints=true` (required for the ODH operator's offline
+chart render, which does not populate Helm Capabilities). On Kind or vanilla Kubernetes
+the SCC is omitted. For a Kustomize OpenShift deploy, also apply `config/openshift`.
+
+For an administrator-managed database, configure an External provider with a connection Secret
+instead. See the [provider API](../api/infrastructure/v1alpha1/databaseprovider_types.go)
 for the supported fields.
 
 ## Request a database

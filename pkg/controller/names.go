@@ -52,6 +52,24 @@ func InternalServiceName(providerName string) string {
 	return providerName
 }
 
+// MaxInternalProviderNameLength is the max metadata.name length for Internal
+// providers. The longest derived name appends "-postgres-scc" (13 runes) and
+// must stay within the 63-character Kubernetes name limit; the CRD CEL rule
+// enforces the same bound.
+const MaxInternalProviderNameLength = 63 - len("-postgres-scc")
+
+// InternalServiceAccountName is the dedicated ServiceAccount for an Internal
+// Postgres StatefulSet. It must not be the operator SA or namespace default.
+func InternalServiceAccountName(providerName string) string {
+	return providerName + "-postgres"
+}
+
+// InternalSCCRoleBindingName binds the Internal Postgres SA to the shared
+// SCC-use ClusterRole in the provider's Internal namespace.
+func InternalSCCRoleBindingName(providerName string) string {
+	return providerName + "-postgres-scc"
+}
+
 func InternalPVCName(providerName string) string {
 	return providerName
 }
