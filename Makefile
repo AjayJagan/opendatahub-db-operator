@@ -257,7 +257,9 @@ container-load-kind: ## Load $(IMG) into a Kind cluster. `kind load docker-image
 .PHONY: helm
 helm: manifests generate ## Generate and lint the Helm chart from kustomize output via chartgen.
 	# Chartgen stages output before replacing chart artifacts; do not delete config/chart before running it.
-	$(KUSTOMIZE) build config/default | go run ./cmd/main.go chartgen --output config/chart
+	# Merge OpenShift install-time SCC/ClusterRole (no namePrefix) after config/default.
+	{ $(KUSTOMIZE) build config/default; echo '---'; $(KUSTOMIZE) build config/openshift; } | \
+		go run ./cmd/main.go chartgen --output config/chart
 	$(HELM) lint config/chart
 
 ##@ Deployment

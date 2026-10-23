@@ -16,6 +16,7 @@ namespaced database claims.
 - Cluster administrator access to enable the module or install the chart and its CRDs.
 - A working storage class when using an Internal PostgreSQL provider.
 - Helm when installing the standalone chart.
+- cert-manager installed on the cluster when installing the standalone chart.
 
 Follow the [installation instructions for your OpenShift AI release](https://docs.redhat.com/en/documentation/red_hat_openshift_ai_self-managed/).
 The database module's `DataScienceCluster` setting is available in operator releases that include
@@ -32,9 +33,23 @@ oc patch datasciencecluster default-dsc --type=merge \
 oc wait --for=condition=Ready databaseservice/default-db-operator --timeout=5m
 ```
 
-For standalone evaluation or development, install the generated Helm chart directly. The chart does
-not set a namespace in `values.yaml`; install it in `odh-db-operator-system`, the namespace used by
-the Kustomize bundle, or choose another namespace:
+For standalone evaluation or development, install the infrastructure CRDs before the chart.
+The chart packages the `DatabaseService` CRD, but not the infrastructure CRDs. The operator
+registers the provider and database claim controllers when it starts and finds their CRDs; the
+provider controller also watches `SchemaClaim` resources:
+
+```sh
+kubectl apply -f config/crd/bases/infrastructure.opendatahub.io_databaseproviders.yaml
+kubectl apply -f config/crd/bases/infrastructure.opendatahub.io_databaseclaims.yaml
+kubectl apply -f config/crd/bases/infrastructure.opendatahub.io_schemaclaims.yaml
+kubectl wait --for=condition=Established \
+  crd/databaseproviders.infrastructure.opendatahub.io \
+  crd/databaseclaims.infrastructure.opendatahub.io \
+  crd/schemaclaims.infrastructure.opendatahub.io --timeout=2m
+```
+
+The chart does not set a namespace in `values.yaml`; install it in `odh-db-operator-system`,
+the namespace used by the Kustomize bundle, or choose another namespace:
 
 ```sh
 helm install opendatahub-db-operator config/chart --create-namespace --namespace odh-db-operator-system
@@ -75,8 +90,17 @@ spec:
 
 Apply the provider manifest with `oc apply -f databaseprovider.yaml`.
 
-Internal providers are single-instance PostgreSQL services. For an administrator-managed database,
-configure an External provider with a connection Secret instead. See the [provider API](../api/infrastructure/v1alpha1/databaseprovider_types.go)
+Internal providers are single-instance PostgreSQL services. On OpenShift, the Helm chart
+installs a shared SecurityContextConstraints and use ClusterRole limited to UID/GID 26;
+the operator creates a dedicated ServiceAccount per provider and binds it to that SCC.
+The SCC template is included when the cluster advertises `security.openshift.io/v1`
+(standalone `helm install`/`upgrade`) or when
+`openshift.securityContextConstraints=true` (required for the ODH operator's offline
+chart render, which does not populate Helm Capabilities). On Kind or vanilla Kubernetes
+the SCC is omitted. For a Kustomize OpenShift deploy, also apply `config/openshift`.
+
+For an administrator-managed database, configure an External provider with a connection Secret
+instead. See the [provider API](../api/infrastructure/v1alpha1/databaseprovider_types.go)
 for the supported fields.
 
 ## Request a database
