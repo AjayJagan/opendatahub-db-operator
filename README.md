@@ -58,7 +58,3 @@ references help locate the relevant work:
 | Reconciliation or PostgreSQL provisioning | [Repository components](ARCHITECTURE.md#repository-components) |
 | Generated manifests or chart packaging | [Make targets](Makefile) and the [chart-generation overview](ARCHITECTURE.md#repository-components) |
 | Tests or CI | [Test environments](CONTRIBUTING.md#test-environments) and the [CI workflow](.github/workflows/ci.yaml) |
-
-Report bugs or propose changes through
-[GitHub Issues](https://github.com/opendatahub-io/opendatahub-db-operator/issues).
-This project is licensed under [Apache 2.0](LICENSE).
