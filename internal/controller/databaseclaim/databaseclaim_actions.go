@@ -20,8 +20,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	api "github.com/opendatahub-io/odh-platform-utilities/framework/api"
@@ -248,11 +251,28 @@ func (m *Controller) cleanupAction(ctx context.Context, rr *odhtypes.Reconciliat
 	if err != nil {
 		return fmt.Errorf("listing DatabaseClaims before database drop: %w", err)
 	}
-	if dbcontroller.ShouldDropClaimDatabase(obj, providerCfg.DBName, others) {
-		if err := postgres.DropDatabase(ctx, pgClient, database); err != nil {
-			return fmt.Errorf("dropping database %q: %w", database, err)
-		}
-	}
 
+	// Skip SchemaClaim listing when we would not drop anyway (e.g. Retain).
+	if !dbcontroller.ShouldDropClaimDatabase(obj, providerCfg.DBName, others, nil) {
+		return nil
+	}
+	schemaClaims, err := dbcontroller.ListSchemaClaims(ctx, rr.Client)
+	if err != nil {
+		if !schemaClaimAPIUnavailable(err) {
+			return fmt.Errorf("listing SchemaClaims before database drop: %w", err)
+		}
+		// SchemaClaim CRD/API absent: nothing to protect.
+	} else if !dbcontroller.ShouldDropClaimDatabase(obj, providerCfg.DBName, others, schemaClaims) {
+		return nil
+	}
+	if err := postgres.DropDatabase(ctx, pgClient, database); err != nil {
+		return fmt.Errorf("dropping database %q: %w", database, err)
+	}
 	return nil
+}
+
+func schemaClaimAPIUnavailable(err error) bool {
+	return meta.IsNoMatchError(err) ||
+		apierrors.IsNotFound(err) ||
+		strings.Contains(err.Error(), "failed to get API group resources")
 }
