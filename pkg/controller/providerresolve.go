@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
+	servicesApi "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
 )
 
 const (
@@ -78,6 +79,34 @@ func ResolveForCurrent(
 	default:
 		return nil, fmt.Errorf("provider reference must set either name or selector")
 	}
+}
+
+// ResolveForCurrentOrDefault keeps an existing implicit binding stable and
+// otherwise resolves the service's recorded default when the claim omits a provider.
+func ResolveForCurrentOrDefault(
+	ctx context.Context,
+	cli client.Client,
+	ref infraApi.ProviderRef,
+	currentProvider string,
+) (*infraApi.DatabaseProvider, error) {
+	if ref.Name == "" && ref.Selector == nil {
+		if currentProvider != "" {
+			return resolveByName(ctx, cli, currentProvider)
+		}
+		service := &servicesApi.DatabaseService{}
+		err := cli.Get(ctx, client.ObjectKey{Name: servicesApi.DatabaseServiceInstanceName}, service)
+		if apierrors.IsNotFound(err) {
+			return nil, ErrNotFound{Message: "DatabaseService is not installed"}
+		}
+		if err != nil {
+			return nil, fmt.Errorf("getting DatabaseService default provider: %w", err)
+		}
+		if service.Status.DefaultProviderName == "" {
+			return nil, ErrNotFound{Message: "DatabaseService default provider is not initialized"}
+		}
+		return resolveByName(ctx, cli, service.Status.DefaultProviderName)
+	}
+	return ResolveForCurrent(ctx, cli, ref, currentProvider)
 }
 
 func resolveByName(ctx context.Context, cli client.Client, name string) (*infraApi.DatabaseProvider, error) {

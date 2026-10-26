@@ -30,13 +30,35 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
+	servicesApi "github.com/opendatahub-io/opendatahub-db-operator/api/services/v1alpha1"
 	"github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
 )
 
 func newScheme() *runtime.Scheme {
 	s := runtime.NewScheme()
 	_ = infraApi.AddToScheme(s)
+	_ = servicesApi.AddToScheme(s)
 	return s
+}
+
+func TestResolveForCurrentOrDefault(t *testing.T) {
+	g := NewWithT(t)
+	service := &servicesApi.DatabaseService{
+		ObjectMeta: metav1.ObjectMeta{Name: servicesApi.DatabaseServiceInstanceName},
+		Status: servicesApi.DatabaseServiceStatus{
+			DefaultProviderName: "installed-db",
+		},
+	}
+	installed := makeProvider("installed-db", nil, nil)
+	bound := makeProvider("previous-db", nil, nil)
+	cli := fake.NewClientBuilder().WithScheme(newScheme()).WithObjects(service, &installed, &bound).Build()
+
+	got, err := controller.ResolveForCurrentOrDefault(context.Background(), cli, infraApi.ProviderRef{}, "")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(got.Name).To(Equal("installed-db"))
+	got, err = controller.ResolveForCurrentOrDefault(context.Background(), cli, infraApi.ProviderRef{}, "previous-db")
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(got.Name).To(Equal("previous-db"))
 }
 
 func makeProvider(name string, labels map[string]string, annotations map[string]string) infraApi.DatabaseProvider {
