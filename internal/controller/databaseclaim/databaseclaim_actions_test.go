@@ -19,6 +19,7 @@ package databaseclaim
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	. "github.com/onsi/gomega"
@@ -27,8 +28,11 @@ import (
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 	odhtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
@@ -77,6 +81,32 @@ func TestProvisionAction_PersistsProviderBindingBeforeEnsure(t *testing.T) {
 	provisioned := conditions.FindStatusCondition(claim, ConditionProvisioned)
 	g.Expect(provisioned).NotTo(BeNil())
 	g.Expect(provisioned.Reason).To(Equal("ProviderBound"))
+}
+
+func TestSchemaClaimAPIUnavailable(t *testing.T) {
+	g := NewWithT(t)
+	schemaclaimGVK := schema.GroupVersionKind{
+		Group:   infraApi.GroupName,
+		Version: "v1alpha1",
+		Kind:    "SchemaClaim",
+	}
+
+	g.Expect(schemaClaimAPIUnavailable(&meta.NoKindMatchError{GroupKind: schemaclaimGVK.GroupKind()})).
+		To(BeTrue(), "NoKindMatchError means the SchemaClaim CRD is absent")
+	g.Expect(schemaClaimAPIUnavailable(apierrors.NewNotFound(
+		schema.GroupResource{Group: infraApi.GroupName, Resource: "schemaclaims"},
+		"",
+	))).To(BeTrue(), "NotFound is returned by some discovery paths when the API is missing")
+	g.Expect(schemaClaimAPIUnavailable(fmt.Errorf(
+		"failed to get API group resources: unable to retrieve the complete list of server APIs: %w",
+		apierrors.NewNotFound(schema.GroupResource{Group: infraApi.GroupName, Resource: "schemaclaims"}, ""),
+	))).To(BeTrue(), "controller-runtime discovery failure must not stick cleanup")
+	g.Expect(schemaClaimAPIUnavailable(errors.New("Unauthorized"))).To(BeFalse())
+	g.Expect(schemaClaimAPIUnavailable(apierrors.NewForbidden(
+		schema.GroupResource{Group: infraApi.GroupName, Resource: "schemaclaims"},
+		"",
+		errors.New("no RBAC"),
+	))).To(BeFalse(), "Forbidden is a real misconfiguration and should retry")
 }
 
 func claimTestScheme(t *testing.T) *runtime.Scheme {
