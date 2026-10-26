@@ -15,7 +15,9 @@ See `go.mod` for the Go version and `.github/workflows/ci.yaml` for CI's Go and 
 ## Test environments
 
 Run the narrowest suite that exercises your change. Run these commands from the repository root;
-the [Makefile](Makefile) defines their setup steps and defaults.
+the [Makefile](Makefile) defines their setup steps and defaults. E2E sources have no build tags:
+unit-test targets exclude `test/e2e`, while `go test ./...` also runs the e2e, integration, and
+envtest packages and needs their environments.
 
 | Suite | Command | What it checks | Environment |
 | --- | --- | --- | --- |
@@ -51,3 +53,23 @@ shows setup for both profiles. E2E setup builds and loads an image with Podman; 
 configured e2e namespace and `DatabaseService/default-db-operator`, so use an isolated cluster.
 The `external-postgres` namespace created by the setup script remains after the suite. Uncached
 `Containerfile` base images may require registry access.
+
+To exercise the packaged runner, build it with `make e2e-image-build`, then run:
+
+```sh
+make e2e-image-run E2E_CONTEXT=<test-cluster-context> IMG=<cluster-pullable-operator-image>
+```
+
+This runs image setup, the operator smoke test, and teardown, including after a test or setup
+failure. It writes `e2e-results/junit.xml` and `e2e-results/log.jsonl` under `bin/e2e-artifacts/`;
+set `E2E_ARTIFACTS` to change that directory. `IMG` is the operator image installed in the cluster.
+Set `E2E_IMG` to use an already published runner image, or `CONTAINER_TOOL=docker` to use Docker.
+Set `E2E_TEST_PATTERN` to select other tests after their cluster prerequisites are in place.
+
+Use an exclusive disposable cluster with no existing `DatabaseService/default-db-operator` or
+configured e2e namespace. Setup installs cert-manager when it is missing; teardown leaves
+cert-manager and CRDs in place. The target exports only the selected context, with embedded
+certificates, to a temporary kubeconfig and removes that file afterwards. Credentials must be a
+token or client certificate; a host authentication plugin is not available inside the image. The
+API endpoint must be reachable from the container runtime. On macOS, a remote cluster endpoint
+works; a Kind API at `127.0.0.1` needs extra networking so the runtime VM can reach it.
