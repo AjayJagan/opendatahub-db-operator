@@ -162,7 +162,7 @@ func (m *Module) cleanupDefaultProvider(ctx context.Context, rr *odhtypes.Reconc
 		return fmt.Errorf("getting default provider for cleanup: %w", err)
 	}
 	if provider.Annotations[defaultProviderOwnerAnnotation] != service.Name {
-		return fmt.Errorf("refusing to delete DatabaseProvider %q: it is not owned by this DatabaseService", name)
+		return nil
 	}
 	if provider.DeletionTimestamp == nil {
 		if !slices.Contains(provider.Finalizers, providerRetentionFinalizer) {
@@ -198,7 +198,7 @@ func boundClaims(ctx context.Context, cli client.Reader, providerName string) ([
 		return nil, fmt.Errorf("listing DatabaseClaims before default provider deletion: %w", err)
 	}
 	for _, claim := range databases.Items {
-		if claim.Status.Provider == providerName || claim.Spec.Provider.Name == providerName {
+		if claimUsesProvider(claim.Spec.Provider, claim.Status.Provider, providerName) {
 			names = append(names, fmt.Sprintf("DatabaseClaim %s/%s", claim.Namespace, claim.Name))
 		}
 	}
@@ -207,12 +207,17 @@ func boundClaims(ctx context.Context, cli client.Reader, providerName string) ([
 		return nil, fmt.Errorf("listing SchemaClaims before default provider deletion: %w", err)
 	}
 	for _, claim := range schemas.Items {
-		if claim.Status.Provider == providerName || claim.Spec.Provider.Name == providerName {
+		if claimUsesProvider(claim.Spec.Provider, claim.Status.Provider, providerName) {
 			names = append(names, fmt.Sprintf("SchemaClaim %s/%s", claim.Namespace, claim.Name))
 		}
 	}
 	slices.Sort(names)
 	return names, nil
+}
+
+func claimUsesProvider(ref infraApi.ProviderRef, boundName, providerName string) bool {
+	return boundName == providerName || ref.Name == providerName ||
+		(boundName == "" && ref.Name == "" && ref.Selector == nil)
 }
 
 func detachProviderOwner(ctx context.Context, cli client.Client, obj client.Object, key client.ObjectKey, providerUID types.UID) error {

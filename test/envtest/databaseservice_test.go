@@ -160,12 +160,17 @@ func TestDatabaseServiceCreatesDefaultProvider(t *testing.T) {
 	}).Should(Succeed())
 	databaseClaim := &infraApi.DatabaseClaim{}
 	claimKey := client.ObjectKey{Namespace: cfg.OperatorNamespace, Name: "default-database"}
-	g.Expect(cli.Get(ctx, claimKey, databaseClaim)).To(Succeed())
-	databaseClaim.Annotations = map[string]string{"test": "updated"}
-	g.Expect(cli.Update(ctx, databaseClaim)).To(Succeed())
-	g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(databaseClaim), databaseClaim)).To(Succeed())
+	g.Eventually(func() error {
+		if err := mgr.GetAPIReader().Get(ctx, claimKey, databaseClaim); err != nil {
+			return err
+		}
+		databaseClaim.Annotations = map[string]string{"test": "updated"}
+		return cli.Update(ctx, databaseClaim)
+	}).Should(Succeed())
+	g.Expect(mgr.GetAPIReader().Get(ctx, claimKey, databaseClaim)).To(Succeed())
 	databaseClaim.Spec.Provider.Name = "other-provider"
-	g.Expect(cli.Update(ctx, databaseClaim)).NotTo(Succeed(), "an implicit binding must not be changed after creation")
+	err = cli.Update(ctx, databaseClaim)
+	g.Expect(apierrors.IsInvalid(err)).To(BeTrue(), "an implicit binding must not be changed after creation: %v", err)
 
 	provider := &infraApi.DatabaseProvider{
 		ObjectMeta: metav1.ObjectMeta{Name: "external-missing-secret"},

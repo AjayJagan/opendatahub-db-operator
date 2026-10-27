@@ -14,7 +14,7 @@ namespaced database claims.
 - An OpenShift cluster with the OpenShift AI Operator release that includes the `databaseservice` module.
 - An OpenShift version supported by that OpenShift AI release; use its version-specific installation guide.
 - Cluster administrator access to enable the module or install the chart and its CRDs.
-- A working storage class when using an Internal PostgreSQL provider.
+- A working storage class for the default Internal PostgreSQL provider.
 - Helm when installing the standalone chart.
 - cert-manager installed on the cluster when installing the standalone chart.
 

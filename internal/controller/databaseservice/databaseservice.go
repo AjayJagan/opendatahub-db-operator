@@ -54,7 +54,7 @@ func NewModule(cfg *moduleconfig.Config) *Module {
 // +kubebuilder:rbac:groups=services.platform.opendatahub.io,resources=databaseservices/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=services.platform.opendatahub.io,resources=databaseservices/finalizers,verbs=update
 // +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=databaseproviders,verbs=get;list;watch;create;update;delete
-// +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=schemaclaims;databaseclaims,verbs=list
+// +kubebuilder:rbac:groups=infrastructure.opendatahub.io,resources=schemaclaims;databaseclaims,verbs=list;watch
 // +kubebuilder:rbac:groups="",resources=persistentvolumeclaims;secrets,verbs=get;patch
 
 // Baseline RBAC required for all module operators. The CRD grant is
@@ -81,6 +81,14 @@ func NewReconciler(
 	_, err := reconciler.ReconcilerFor(mgr, &servicesv1alpha1.DatabaseService{}).
 		Watches(&infraApi.DatabaseProvider{},
 			reconciler.Dynamic(reconciler.CrdExists(gvk.DatabaseProvider)),
+			reconciler.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+			reconciler.WithEventMapper(dbcontroller.BroadcastListMapper(mgr.GetClient(), &servicesv1alpha1.DatabaseServiceList{}))).
+		Watches(&infraApi.DatabaseClaim{},
+			reconciler.Dynamic(reconciler.CrdExists(gvk.DatabaseClaim)),
+			reconciler.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
+			reconciler.WithEventMapper(dbcontroller.BroadcastListMapper(mgr.GetClient(), &servicesv1alpha1.DatabaseServiceList{}))).
+		Watches(&infraApi.SchemaClaim{},
+			reconciler.Dynamic(reconciler.CrdExists(gvk.SchemaClaim)),
 			reconciler.WithPredicates(predicate.ResourceVersionChangedPredicate{}),
 			reconciler.WithEventMapper(dbcontroller.BroadcastListMapper(mgr.GetClient(), &servicesv1alpha1.DatabaseServiceList{}))).
 		WithReconcilerOpts(

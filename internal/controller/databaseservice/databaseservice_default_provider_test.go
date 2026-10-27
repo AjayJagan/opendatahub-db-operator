@@ -110,6 +110,43 @@ func TestDefaultProviderDeletionBlockedByClaims(t *testing.T) {
 	}
 }
 
+func TestDefaultProviderDeletionBlockedByUnresolvedClaims(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		claim client.Object
+	}{
+		{name: "DatabaseClaim", claim: &infraApi.DatabaseClaim{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team"}}},
+		{name: "SchemaClaim", claim: &infraApi.SchemaClaim{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			service := &servicesApi.DatabaseService{ObjectMeta: metav1.ObjectMeta{Name: servicesApi.DatabaseServiceInstanceName}, Status: servicesApi.DatabaseServiceStatus{DefaultProviderName: "rhai-db"}}
+			provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "rhai-db", Annotations: map[string]string{defaultProviderOwnerAnnotation: service.Name}}}
+			cli := serviceTestClient(t, service, provider, tc.claim)
+			err := NewModule(&moduleconfig.Config{}).cleanupDefaultProvider(ctx, serviceTestRequest(t, cli, service))
+			if err == nil || !strings.Contains(err.Error(), tc.name+" team/app") {
+				t.Fatalf("unresolved claim should block deletion: %v", err)
+			}
+			if err := cli.Get(ctx, client.ObjectKey{Name: provider.Name}, &infraApi.DatabaseProvider{}); err != nil {
+				t.Fatalf("blocked provider was deleted: %v", err)
+			}
+		})
+	}
+}
+
+func TestDefaultProviderDeletionLeavesForeignProvider(t *testing.T) {
+	ctx := context.Background()
+	service := &servicesApi.DatabaseService{ObjectMeta: metav1.ObjectMeta{Name: servicesApi.DatabaseServiceInstanceName}, Status: servicesApi.DatabaseServiceStatus{DefaultProviderName: "rhai-db"}}
+	provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "rhai-db"}}
+	cli := serviceTestClient(t, service, provider)
+	if err := NewModule(&moduleconfig.Config{}).cleanupDefaultProvider(ctx, serviceTestRequest(t, cli, service)); err != nil {
+		t.Fatalf("foreign provider should not block DatabaseService deletion: %v", err)
+	}
+	if err := cli.Get(ctx, client.ObjectKey{Name: provider.Name}, &infraApi.DatabaseProvider{}); err != nil {
+		t.Fatalf("foreign provider was deleted: %v", err)
+	}
+}
+
 func TestDefaultProviderDeletionRetainsDataAndCredentials(t *testing.T) {
 	ctx := context.Background()
 	uid := types.UID("provider-uid")
