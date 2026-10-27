@@ -36,6 +36,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -137,7 +138,15 @@ func (m *Module) cleanupDefaultProvider(ctx context.Context, rr *odhtypes.Reconc
 	if reader == nil {
 		reader = rr.Client
 	}
-	claims, err := boundClaims(ctx, reader, name)
+	provider := &infraApi.DatabaseProvider{}
+	providerErr := reader.Get(ctx, client.ObjectKey{Name: name}, provider)
+	if providerErr != nil {
+		if !apierrors.IsNotFound(providerErr) && !meta.IsNoMatchError(providerErr) {
+			return fmt.Errorf("getting default provider for cleanup: %w", providerErr)
+		}
+		provider = nil
+	}
+	claims, err := boundClaims(ctx, reader, name, provider)
 	if err != nil {
 		return err
 	}
@@ -153,13 +162,8 @@ func (m *Module) cleanupDefaultProvider(ctx context.Context, rr *odhtypes.Reconc
 		return fmt.Errorf("%s", message)
 	}
 
-	provider := &infraApi.DatabaseProvider{}
-	err = rr.Client.Get(ctx, client.ObjectKey{Name: name}, provider)
-	if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
+	if provider == nil {
 		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("getting default provider for cleanup: %w", err)
 	}
 	if provider.Annotations[defaultProviderOwnerAnnotation] != service.Name {
 		return nil
@@ -191,14 +195,18 @@ func (m *Module) cleanupDefaultProvider(ctx context.Context, rr *odhtypes.Reconc
 	return fmt.Errorf("waiting for default DatabaseProvider %q to be removed", name)
 }
 
-func boundClaims(ctx context.Context, cli client.Reader, providerName string) ([]string, error) {
+func boundClaims(ctx context.Context, cli client.Reader, providerName string, provider *infraApi.DatabaseProvider) ([]string, error) {
 	var names []string
 	databases := &infraApi.DatabaseClaimList{}
 	if err := cli.List(ctx, databases); err != nil && !meta.IsNoMatchError(err) {
 		return nil, fmt.Errorf("listing DatabaseClaims before default provider deletion: %w", err)
 	}
 	for _, claim := range databases.Items {
-		if claimUsesProvider(claim.Spec.Provider, claim.Status.Provider, providerName) {
+		usesProvider, err := claimUsesProvider(claim.Spec.Provider, claim.Status.Provider, providerName, provider)
+		if err != nil {
+			return nil, fmt.Errorf("checking DatabaseClaim %s/%s provider selector: %w", claim.Namespace, claim.Name, err)
+		}
+		if usesProvider {
 			names = append(names, fmt.Sprintf("DatabaseClaim %s/%s", claim.Namespace, claim.Name))
 		}
 	}
@@ -207,7 +215,11 @@ func boundClaims(ctx context.Context, cli client.Reader, providerName string) ([
 		return nil, fmt.Errorf("listing SchemaClaims before default provider deletion: %w", err)
 	}
 	for _, claim := range schemas.Items {
-		if claimUsesProvider(claim.Spec.Provider, claim.Status.Provider, providerName) {
+		usesProvider, err := claimUsesProvider(claim.Spec.Provider, claim.Status.Provider, providerName, provider)
+		if err != nil {
+			return nil, fmt.Errorf("checking SchemaClaim %s/%s provider selector: %w", claim.Namespace, claim.Name, err)
+		}
+		if usesProvider {
 			names = append(names, fmt.Sprintf("SchemaClaim %s/%s", claim.Namespace, claim.Name))
 		}
 	}
@@ -215,9 +227,24 @@ func boundClaims(ctx context.Context, cli client.Reader, providerName string) ([
 	return names, nil
 }
 
-func claimUsesProvider(ref infraApi.ProviderRef, boundName, providerName string) bool {
-	return boundName == providerName || ref.Name == providerName ||
-		(boundName == "" && ref.Name == "" && ref.Selector == nil)
+func claimUsesProvider(ref infraApi.ProviderRef, boundName, providerName string, provider *infraApi.DatabaseProvider) (bool, error) {
+	if boundName == providerName || ref.Name == providerName {
+		return true, nil
+	}
+	if boundName != "" || ref.Name != "" {
+		return false, nil
+	}
+	if ref.Selector == nil {
+		return true, nil
+	}
+	if provider == nil {
+		return false, nil
+	}
+	selector, err := metav1.LabelSelectorAsSelector(ref.Selector)
+	if err != nil {
+		return false, err
+	}
+	return selector.Matches(labels.Set(provider.Labels)), nil
 }
 
 func detachProviderOwner(ctx context.Context, cli client.Client, obj client.Object, key client.ObjectKey, providerUID types.UID) error {

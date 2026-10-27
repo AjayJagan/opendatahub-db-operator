@@ -113,10 +113,13 @@ func TestDefaultProviderDeletionBlockedByClaims(t *testing.T) {
 func TestDefaultProviderDeletionBlockedByUnresolvedClaims(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
+		kind  string
 		claim client.Object
 	}{
-		{name: "DatabaseClaim", claim: &infraApi.DatabaseClaim{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team"}}},
-		{name: "SchemaClaim", claim: &infraApi.SchemaClaim{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team"}}},
+		{name: "DatabaseClaim without provider", kind: "DatabaseClaim", claim: &infraApi.DatabaseClaim{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team"}}},
+		{name: "SchemaClaim without provider", kind: "SchemaClaim", claim: &infraApi.SchemaClaim{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team"}}},
+		{name: "DatabaseClaim with matching selector", kind: "DatabaseClaim", claim: &infraApi.DatabaseClaim{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team"}, Spec: infraApi.DatabaseClaimSpec{Provider: infraApi.ProviderRef{Selector: &metav1.LabelSelector{}}}}},
+		{name: "SchemaClaim with matching selector", kind: "SchemaClaim", claim: &infraApi.SchemaClaim{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team"}, Spec: infraApi.SchemaClaimSpec{Provider: infraApi.ProviderRef{Selector: &metav1.LabelSelector{}}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -124,11 +127,31 @@ func TestDefaultProviderDeletionBlockedByUnresolvedClaims(t *testing.T) {
 			provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "rhai-db", Annotations: map[string]string{defaultProviderOwnerAnnotation: service.Name}}}
 			cli := serviceTestClient(t, service, provider, tc.claim)
 			err := NewModule(&moduleconfig.Config{}).cleanupDefaultProvider(ctx, serviceTestRequest(t, cli, service))
-			if err == nil || !strings.Contains(err.Error(), tc.name+" team/app") {
+			if err == nil || !strings.Contains(err.Error(), tc.kind+" team/app") {
 				t.Fatalf("unresolved claim should block deletion: %v", err)
 			}
 			if err := cli.Get(ctx, client.ObjectKey{Name: provider.Name}, &infraApi.DatabaseProvider{}); err != nil {
 				t.Fatalf("blocked provider was deleted: %v", err)
+			}
+		})
+	}
+}
+
+func TestClaimUsesProviderWithSelector(t *testing.T) {
+	provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "rhai-db", Labels: map[string]string{"team": "platform"}}}
+	for _, tc := range []struct {
+		name     string
+		selector *metav1.LabelSelector
+		want     bool
+	}{
+		{name: "matching labels", selector: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "platform"}}, want: true},
+		{name: "nonmatching labels", selector: &metav1.LabelSelector{MatchLabels: map[string]string{"team": "other"}}},
+		{name: "matching expression", selector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{Key: "team", Operator: metav1.LabelSelectorOpIn, Values: []string{"platform"}}}}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			usesProvider, err := claimUsesProvider(infraApi.ProviderRef{Selector: tc.selector}, "", provider.Name, provider)
+			if err != nil || usesProvider != tc.want {
+				t.Fatalf("selector uses default provider: got %t, want %t, err %v", usesProvider, tc.want, err)
 			}
 		})
 	}
