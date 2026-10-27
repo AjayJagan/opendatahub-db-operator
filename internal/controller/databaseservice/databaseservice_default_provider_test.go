@@ -160,7 +160,15 @@ func TestClaimUsesProviderWithSelector(t *testing.T) {
 func TestDefaultProviderDeletionLeavesForeignProvider(t *testing.T) {
 	ctx := context.Background()
 	service := &servicesApi.DatabaseService{ObjectMeta: metav1.ObjectMeta{Name: servicesApi.DatabaseServiceInstanceName}, Status: servicesApi.DatabaseServiceStatus{DefaultProviderName: "rhai-db"}}
-	provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "rhai-db"}}
+	provider := &infraApi.DatabaseProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "rhai-db"},
+		Spec: infraApi.DatabaseProviderSpec{
+			Type: infraApi.ProviderTypeExternal,
+			External: &infraApi.ExternalProviderSpec{
+				ConnectionSecretRef: corev1.SecretReference{Name: "external-admin", Namespace: "team"},
+			},
+		},
+	}
 	claim := &infraApi.DatabaseClaim{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team"}, Spec: infraApi.DatabaseClaimSpec{Provider: infraApi.ProviderRef{Name: provider.Name}}, Status: infraApi.DatabaseClaimStatus{Provider: provider.Name}}
 	cli := serviceTestClient(t, service, provider, claim)
 	if err := NewModule(&moduleconfig.Config{}).cleanupDefaultProvider(ctx, serviceTestRequest(t, cli, service)); err != nil {
@@ -168,6 +176,30 @@ func TestDefaultProviderDeletionLeavesForeignProvider(t *testing.T) {
 	}
 	if err := cli.Get(ctx, client.ObjectKey{Name: provider.Name}, &infraApi.DatabaseProvider{}); err != nil {
 		t.Fatalf("foreign provider was deleted: %v", err)
+	}
+}
+
+func TestDefaultProviderDeletionRejectsOwnedExternalProvider(t *testing.T) {
+	ctx := context.Background()
+	service := &servicesApi.DatabaseService{ObjectMeta: metav1.ObjectMeta{Name: servicesApi.DatabaseServiceInstanceName}, Status: servicesApi.DatabaseServiceStatus{DefaultProviderName: "rhai-db"}}
+	provider := &infraApi.DatabaseProvider{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "rhai-db", Annotations: map[string]string{defaultProviderOwnerAnnotation: service.Name},
+		},
+		Spec: infraApi.DatabaseProviderSpec{
+			Type: infraApi.ProviderTypeExternal,
+			External: &infraApi.ExternalProviderSpec{
+				ConnectionSecretRef: corev1.SecretReference{Name: "external-admin", Namespace: "team"},
+			},
+		},
+	}
+	cli := serviceTestClient(t, service, provider)
+	err := NewModule(&moduleconfig.Config{}).cleanupDefaultProvider(ctx, serviceTestRequest(t, cli, service))
+	if err == nil || !strings.Contains(err.Error(), "owned by this DatabaseService but is not Internal") {
+		t.Fatalf("owned External provider should block DatabaseService deletion: %v", err)
+	}
+	if err := cli.Get(ctx, client.ObjectKey{Name: provider.Name}, &infraApi.DatabaseProvider{}); err != nil {
+		t.Fatalf("owned External provider was deleted: %v", err)
 	}
 }
 

@@ -146,9 +146,11 @@ func (m *Module) cleanupDefaultProvider(ctx context.Context, rr *odhtypes.Reconc
 		}
 		provider = nil
 	}
-	if provider == nil || provider.Annotations[defaultProviderOwnerAnnotation] != service.Name ||
-		provider.Spec.Type != infraApi.ProviderTypeInternal {
+	if provider == nil || provider.Annotations[defaultProviderOwnerAnnotation] != service.Name {
 		return nil
+	}
+	if provider.Spec.Type != infraApi.ProviderTypeInternal {
+		return fmt.Errorf("default DatabaseProvider %q is owned by this DatabaseService but is not Internal", name)
 	}
 	claims, err := boundClaims(ctx, reader, name, provider)
 	if err != nil {
