@@ -35,6 +35,8 @@ import (
 )
 
 const (
+	AnnotationDefaultProviderOwner = "db.infrastructure.opendatahub.io/default-provider-of"
+
 	// AnnotationSelectionPriority is the annotation key on a DatabaseProvider
 	// that breaks ties when multiple providers match a selector. Higher integer
 	// wins; missing or invalid values are treated as 0.
@@ -90,9 +92,6 @@ func ResolveForCurrentOrDefault(
 	currentProvider string,
 ) (*infraApi.DatabaseProvider, error) {
 	if ref.Name == "" && ref.Selector == nil {
-		if currentProvider != "" {
-			return resolveByName(ctx, cli, currentProvider)
-		}
 		service := &servicesApi.DatabaseService{}
 		err := cli.Get(ctx, client.ObjectKey{Name: servicesApi.DatabaseServiceInstanceName}, service)
 		if apierrors.IsNotFound(err) {
@@ -104,7 +103,20 @@ func ResolveForCurrentOrDefault(
 		if service.Status.DefaultProviderName == "" {
 			return nil, ErrNotFound{Message: "DatabaseService default provider is not initialized"}
 		}
-		return resolveByName(ctx, cli, service.Status.DefaultProviderName)
+		name := currentProvider
+		if name == "" {
+			name = service.Status.DefaultProviderName
+		}
+		provider, err := resolveByName(ctx, cli, name)
+		if err != nil {
+			return nil, err
+		}
+		if provider.Annotations[AnnotationDefaultProviderOwner] != service.Name ||
+			provider.Spec.Type != infraApi.ProviderTypeInternal {
+			return nil, ErrNotFound{Message: fmt.Sprintf(
+				"DatabaseProvider %q is not the DatabaseService Internal default provider", name)}
+		}
+		return provider, nil
 	}
 	return ResolveForCurrent(ctx, cli, ref, currentProvider)
 }

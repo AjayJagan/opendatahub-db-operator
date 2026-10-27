@@ -45,7 +45,7 @@ const (
 	conditionDefaultProviderReady   = "DefaultProviderReady"
 	defaultProviderCleanupFinalizer = "services.platform.opendatahub.io/default-provider-cleanup"
 	providerRetentionFinalizer      = "services.platform.opendatahub.io/retain-default-provider-data"
-	defaultProviderOwnerAnnotation  = "db.infrastructure.opendatahub.io/default-provider-of"
+	defaultProviderOwnerAnnotation  = dbcontroller.AnnotationDefaultProviderOwner
 )
 
 func (m *Module) defaultProviderName() string {
@@ -146,6 +146,10 @@ func (m *Module) cleanupDefaultProvider(ctx context.Context, rr *odhtypes.Reconc
 		}
 		provider = nil
 	}
+	if provider == nil || provider.Annotations[defaultProviderOwnerAnnotation] != service.Name ||
+		provider.Spec.Type != infraApi.ProviderTypeInternal {
+		return nil
+	}
 	claims, err := boundClaims(ctx, reader, name, provider)
 	if err != nil {
 		return err
@@ -162,12 +166,6 @@ func (m *Module) cleanupDefaultProvider(ctx context.Context, rr *odhtypes.Reconc
 		return fmt.Errorf("%s", message)
 	}
 
-	if provider == nil {
-		return nil
-	}
-	if provider.Annotations[defaultProviderOwnerAnnotation] != service.Name {
-		return nil
-	}
 	if provider.DeletionTimestamp == nil {
 		if !slices.Contains(provider.Finalizers, providerRetentionFinalizer) {
 			provider.Finalizers = append(provider.Finalizers, providerRetentionFinalizer)

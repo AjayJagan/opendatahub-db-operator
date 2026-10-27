@@ -90,7 +90,7 @@ func TestDefaultProviderNameCollision(t *testing.T) {
 func TestDefaultProviderDeletionBlockedByClaims(t *testing.T) {
 	ctx := context.Background()
 	service := &servicesApi.DatabaseService{ObjectMeta: metav1.ObjectMeta{Name: servicesApi.DatabaseServiceInstanceName}, Status: servicesApi.DatabaseServiceStatus{DefaultProviderName: "rhai-db"}}
-	provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "rhai-db", Annotations: map[string]string{defaultProviderOwnerAnnotation: service.Name}}}
+	provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "rhai-db", Annotations: map[string]string{defaultProviderOwnerAnnotation: service.Name}}, Spec: infraApi.DatabaseProviderSpec{Type: infraApi.ProviderTypeInternal}}
 	claim := &infraApi.DatabaseClaim{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team"}, Status: infraApi.DatabaseClaimStatus{Provider: "rhai-db"}}
 	cli := serviceTestClient(t, service, provider, claim)
 	err := NewModule(&moduleconfig.Config{}).cleanupDefaultProvider(ctx, serviceTestRequest(t, cli, service))
@@ -124,7 +124,7 @@ func TestDefaultProviderDeletionBlockedByUnresolvedClaims(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			service := &servicesApi.DatabaseService{ObjectMeta: metav1.ObjectMeta{Name: servicesApi.DatabaseServiceInstanceName}, Status: servicesApi.DatabaseServiceStatus{DefaultProviderName: "rhai-db"}}
-			provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "rhai-db", Annotations: map[string]string{defaultProviderOwnerAnnotation: service.Name}}}
+			provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "rhai-db", Annotations: map[string]string{defaultProviderOwnerAnnotation: service.Name}}, Spec: infraApi.DatabaseProviderSpec{Type: infraApi.ProviderTypeInternal}}
 			cli := serviceTestClient(t, service, provider, tc.claim)
 			err := NewModule(&moduleconfig.Config{}).cleanupDefaultProvider(ctx, serviceTestRequest(t, cli, service))
 			if err == nil || !strings.Contains(err.Error(), tc.kind+" team/app") {
@@ -161,7 +161,8 @@ func TestDefaultProviderDeletionLeavesForeignProvider(t *testing.T) {
 	ctx := context.Background()
 	service := &servicesApi.DatabaseService{ObjectMeta: metav1.ObjectMeta{Name: servicesApi.DatabaseServiceInstanceName}, Status: servicesApi.DatabaseServiceStatus{DefaultProviderName: "rhai-db"}}
 	provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "rhai-db"}}
-	cli := serviceTestClient(t, service, provider)
+	claim := &infraApi.DatabaseClaim{ObjectMeta: metav1.ObjectMeta{Name: "app", Namespace: "team"}, Spec: infraApi.DatabaseClaimSpec{Provider: infraApi.ProviderRef{Name: provider.Name}}, Status: infraApi.DatabaseClaimStatus{Provider: provider.Name}}
+	cli := serviceTestClient(t, service, provider, claim)
 	if err := NewModule(&moduleconfig.Config{}).cleanupDefaultProvider(ctx, serviceTestRequest(t, cli, service)); err != nil {
 		t.Fatalf("foreign provider should not block DatabaseService deletion: %v", err)
 	}
@@ -174,7 +175,7 @@ func TestDefaultProviderDeletionRetainsDataAndCredentials(t *testing.T) {
 	ctx := context.Background()
 	uid := types.UID("provider-uid")
 	service := &servicesApi.DatabaseService{ObjectMeta: metav1.ObjectMeta{Name: servicesApi.DatabaseServiceInstanceName}, Status: servicesApi.DatabaseServiceStatus{DefaultProviderName: "rhai-db"}}
-	provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "rhai-db", UID: uid, Annotations: map[string]string{defaultProviderOwnerAnnotation: service.Name}}}
+	provider := &infraApi.DatabaseProvider{ObjectMeta: metav1.ObjectMeta{Name: "rhai-db", UID: uid, Annotations: map[string]string{defaultProviderOwnerAnnotation: service.Name}}, Spec: infraApi.DatabaseProviderSpec{Type: infraApi.ProviderTypeInternal}}
 	owner := metav1.OwnerReference{APIVersion: infraApi.SchemeGroupVersion.String(), Kind: "DatabaseProvider", Name: provider.Name, UID: uid}
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "rhai-db", Namespace: "operator", OwnerReferences: []metav1.OwnerReference{owner}}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "rhai-db-admin", Namespace: "operator", OwnerReferences: []metav1.OwnerReference{owner}}}
