@@ -16,7 +16,10 @@ limitations under the License.
 
 package claimerrors
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 type DatabaseNotFound struct {
 	Database string
@@ -74,4 +77,26 @@ type SecretNotOwned struct {
 
 func (e SecretNotOwned) Error() string {
 	return fmt.Sprintf("credentials Secret %q already exists and is not owned by this claim", e.Secret)
+}
+
+// ExtensionNotAvailable is returned when a claim requires PostgreSQL
+// extensions that are absent from pg_extension in the target database on an
+// External provider. The claim must not bind until an administrator installs
+// them in that database.
+type ExtensionNotAvailable struct {
+	Extensions []string
+}
+
+func (e ExtensionNotAvailable) Error() string {
+	switch len(e.Extensions) {
+	case 0:
+		return "required extensions are not installed in the target database"
+	case 1:
+		return fmt.Sprintf("extension %q is not installed in the target database", e.Extensions[0])
+	default:
+		return fmt.Sprintf(
+			"extensions [%s] are not installed in the target database",
+			strings.Join(e.Extensions, ", "),
+		)
+	}
 }

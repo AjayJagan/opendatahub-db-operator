@@ -36,8 +36,8 @@ func openPool(t *testing.T, cfg postgres.Config) postgres.Client {
 	return pool
 }
 
-// TestDDL_CreateDropSchema verifies CreateSchema is idempotent,
-// CreateSchemaExclusive rejects duplicates, and DropSchemaCascade is idempotent.
+// TestDDL_CreateDropSchema verifies CreateSchema and DropSchemaCascade are
+// idempotent, and CreateSchema does not write an ownership marker.
 func TestDDL_CreateDropSchema(t *testing.T) {
 	g := NewWithT(t)
 	cfg := startPostgres(t)
@@ -48,9 +48,6 @@ func TestDDL_CreateDropSchema(t *testing.T) {
 	g.Expect(postgres.CreateSchema(ctx, pool, "myschema")).To(Succeed())
 	// Second call is idempotent
 	g.Expect(postgres.CreateSchema(ctx, pool, "myschema")).To(Succeed())
-
-	err := postgres.CreateSchemaExclusive(ctx, pool, "myschema")
-	g.Expect(postgres.IsDuplicateSchema(err)).To(BeTrue())
 
 	uid, err := postgres.SchemaOwnerClaimUID(ctx, pool, "myschema")
 	g.Expect(err).NotTo(HaveOccurred())
@@ -373,4 +370,16 @@ func TestDDL_DatabaseExists(t *testing.T) {
 	notExists, err := postgres.DatabaseExists(ctx, pool, "totally_nonexistent_db_xyz")
 	g.Expect(err).NotTo(HaveOccurred())
 	g.Expect(notExists).To(BeFalse())
+}
+
+func TestDDL_MissingExtensions(t *testing.T) {
+	g := NewWithT(t)
+	cfg := startPostgres(t)
+
+	ctx := t.Context()
+	pool := openPool(t, cfg)
+
+	missing, err := postgres.MissingExtensions(ctx, pool, []string{"plpgsql", "totally_nonexistent_ext_xyz"})
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(missing).To(Equal([]string{"totally_nonexistent_ext_xyz"}))
 }

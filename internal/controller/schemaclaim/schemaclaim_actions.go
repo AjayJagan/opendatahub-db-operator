@@ -150,6 +150,13 @@ func (m *Controller) provisionAction(ctx context.Context, rr *odhtypes.Reconcili
 			conditions.WithMessage(secretNotOwned.Error()))
 		return odherrors.NewStopErrorW(secretNotOwned)
 	}
+	if missingExt, ok := errors.AsType[claimerrors.ExtensionNotAvailable](err); ok {
+		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
+			conditions.WithReason("ExtensionNotAvailable"),
+			conditions.WithMessage(missingExt.Error()))
+		// Out-of-band install in the target DB; requeue like DatabaseNotFound.
+		return odherrors.NewStopErrorW(missingExt).WithRequeueAfter(m.retryInterval())
+	}
 	if err != nil {
 		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
 			conditions.WithError(err))

@@ -31,7 +31,6 @@ import (
 // every %s argument must come from QuoteIdentifier or QuoteLiteral.
 const (
 	sqlCreateSchemaIfNotExists = "CREATE SCHEMA IF NOT EXISTS %s"
-	sqlCreateSchema            = "CREATE SCHEMA %s"
 	sqlCreateDatabase          = "CREATE DATABASE %s"
 	sqlDropDatabase            = "DROP DATABASE IF EXISTS %s"
 	sqlDropDatabaseForce       = "DROP DATABASE IF EXISTS %s WITH (FORCE)"
@@ -71,6 +70,9 @@ const (
 
 	sqlCreateExtensionIfNotExists = "CREATE EXTENSION IF NOT EXISTS %s"
 
+	// Installed in the connected database (not merely loadable on the instance).
+	sqlInstalledExtensions = "SELECT ARRAY(SELECT extname FROM pg_extension WHERE extname = ANY($1))"
+
 	sqlDatabaseExists     = "SELECT EXISTS(SELECT 1 FROM pg_database WHERE datname = $1)"
 	sqlSchemaExists       = "SELECT EXISTS(SELECT 1 FROM pg_namespace WHERE nspname = $1)"
 	sqlSchemaOwnerComment = "" +
@@ -98,13 +100,6 @@ $$`
 // CreateSchema creates a schema if it doesn't already exist. Idempotent.
 func CreateSchema(ctx context.Context, cli Client, schema string) error {
 	_, err := cli.Exec(ctx, fmt.Sprintf(sqlCreateSchemaIfNotExists, QuoteIdentifier(schema)))
-	return err
-}
-
-// CreateSchemaExclusive creates a schema and returns a duplicate-schema error
-// if it already exists, so callers can detect a lost create race.
-func CreateSchemaExclusive(ctx context.Context, cli Client, schema string) error {
-	_, err := cli.Exec(ctx, fmt.Sprintf(sqlCreateSchema, QuoteIdentifier(schema)))
 	return err
 }
 
@@ -418,20 +413,14 @@ func RevokeSchemaPrivileges(ctx context.Context, cli Client, schema, role string
 	return fmt.Errorf("revoking schema privileges (partial): %v", errs)
 }
 
-// HasSchemaPrivileges reports whether role already holds the privileges
-// expected for accessMode on schema: USAGE for ReadOnly, USAGE+CREATE for
-// ReadWrite. COALESCE handles the NULL returned when the role is unknown to
-// HAS_SCHEMA_PRIVILEGE (treats it as false).
+// HasSchemaPrivileges reports whether role already holds schema-level
+// privileges for accessMode: USAGE for ReadOnly, USAGE+CREATE for ReadWrite.
+// COALESCE treats NULL from an unknown role as false.
 //
-// Note: this checks schema-level grants only (USAGE / CREATE on the schema
-// itself). It does not check DML grants on individual tables that existed
-// before the schema was claimed, or on tables whose default privileges were
-// manually revoked. If such tables exist, HAS_SCHEMA_PRIVILEGE may return
-// true while queries against those tables still fail. This is an acceptable
-// bounded risk: new schemas provisioned by this operator contain no
-// pre-existing tables, so the check is complete for the normal provisioning
-// path. Operators who manually manipulate schema objects should verify
-// per-table grants independently.
+// This is a shallow probe (schema USAGE/CREATE only). It does not cover table,
+// sequence, or default-privilege grants that GrantSchemaPrivileges also
+// applies. SchemaClaim reconcile therefore re-runs GrantSchemaPrivileges
+// every time instead of gating on this check.
 func HasSchemaPrivileges(
 	ctx context.Context,
 	cli Client,
@@ -552,4 +541,36 @@ func CreateExtensionIfNotExists(ctx context.Context, cli Client, extensions []st
 	}
 
 	return nil
+}
+
+// MissingExtensions returns the subset of names absent from pg_extension in
+// the connected database, in input order. Empty input yields a nil slice.
+// One round-trip covers the whole list.
+func MissingExtensions(ctx context.Context, cli Client, names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+
+	row, err := cli.QueryRow(ctx, sqlInstalledExtensions, names)
+	if err != nil {
+		return nil, fmt.Errorf("checking extension installation: %w", err)
+	}
+
+	var installed []string
+	if err := row.Scan(&installed); err != nil {
+		return nil, fmt.Errorf("checking extension installation: %w", err)
+	}
+
+	have := make(map[string]struct{}, len(installed))
+	for _, name := range installed {
+		have[name] = struct{}{}
+	}
+
+	var missing []string
+	for _, name := range names {
+		if _, ok := have[name]; !ok {
+			missing = append(missing, name)
+		}
+	}
+	return missing, nil
 }

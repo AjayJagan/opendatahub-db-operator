@@ -19,6 +19,7 @@ package schemaclaim_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -374,6 +375,114 @@ func TestEnsure_ReadOnlyGrantsConnectWithoutDatabaseCreate(t *testing.T) {
 	g.Expect(pg.grantedDBCreate).To(Equal(0))
 }
 
+// TestEnsure_RegrantsSchemaPrivilegesOnEveryReconcile guards the partial-grant
+// self-heal path: GrantSchemaPrivileges is multi-statement, and a shallow
+// USAGE/CREATE check must not skip re-grant on later reconciles.
+func TestEnsure_RegrantsSchemaPrivilegesOnEveryReconcile(t *testing.T) {
+	g := NewWithT(t)
+	claim := sampleClaim()
+	pg := &trackingClient{
+		cfg:       providerConfig(),
+		databases: map[string]bool{"analytics": true},
+	}
+	cli := fakeClient(t, claim)
+	provisioner := schemaclaim.SchemaProvisioner{
+		Client:         cli,
+		Claim:          claim,
+		Provider:       internalProvider(),
+		Postgres:       pg,
+		ProviderConfig: providerConfig(),
+		ClientFactory: func(_ context.Context, cfg postgres.Config) (postgres.Client, error) {
+			return &trackingClient{
+				cfg:          cfg,
+				databases:    pg.databases,
+				schemas:      pg.schemas,
+				schemaOwners: pg.schemaOwners,
+				roles:        pg.roles,
+				parent:       pg,
+			}, nil
+		},
+	}
+
+	_, err := provisioner.Ensure(context.Background())
+	g.Expect(err).NotTo(HaveOccurred())
+	afterFirstTables := pg.countExecContaining("ON ALL TABLES IN SCHEMA")
+	afterFirstDefaults := pg.countExecContaining("ALTER DEFAULT PRIVILEGES IN SCHEMA")
+	g.Expect(afterFirstTables).To(BeNumerically(">", 0))
+	g.Expect(afterFirstDefaults).To(BeNumerically(">", 0))
+
+	_, err = provisioner.Ensure(context.Background())
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(pg.countExecContaining("ON ALL TABLES IN SCHEMA")).To(Equal(afterFirstTables * 2))
+	g.Expect(pg.countExecContaining("ALTER DEFAULT PRIVILEGES IN SCHEMA")).To(Equal(afterFirstDefaults * 2))
+}
+
+func TestEnsure_InternalInstallsExtensionsBeforeSchema(t *testing.T) {
+	g := NewWithT(t)
+	claim := sampleClaim()
+	claim.Spec.Extensions = []string{"vector"}
+	pg := &trackingClient{
+		cfg:       providerConfig(),
+		databases: map[string]bool{"analytics": true},
+	}
+
+	_, err := ensure(t, claim, internalProvider(), pg)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(pg.createdSchemas).To(ContainElement("myschema"))
+	g.Expect(pg.execSQLsContainingCreateExtension("vector")).To(BeTrue())
+}
+
+func TestEnsure_ExternalMissingExtensionReturnsNotAvailable(t *testing.T) {
+	g := NewWithT(t)
+	claim := sampleClaim()
+	claim.Spec.Extensions = []string{"vector"}
+	provider := &infraApi.DatabaseProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "external"},
+		Spec: infraApi.DatabaseProviderSpec{
+			Type:     infraApi.ProviderTypeExternal,
+			External: &infraApi.ExternalProviderSpec{},
+		},
+	}
+	pg := &trackingClient{
+		cfg:                      providerConfig(),
+		databases:                map[string]bool{"analytics": true},
+		extensionAvailableByName: map[string]bool{"vector": false},
+	}
+
+	_, err := ensure(t, claim, provider, pg)
+	var missing claimerrors.ExtensionNotAvailable
+	g.Expect(errors.As(err, &missing)).To(BeTrue())
+	g.Expect(missing.Extensions).To(Equal([]string{"vector"}))
+	g.Expect(pg.execSQLsContainingCreateExtension("vector")).To(BeFalse())
+}
+
+func TestEnsure_ExternalAvailableExtensionNeverCreates(t *testing.T) {
+	g := NewWithT(t)
+	claim := sampleClaim()
+	claim.Spec.Extensions = []string{"vector"}
+	provider := &infraApi.DatabaseProvider{
+		ObjectMeta: metav1.ObjectMeta{Name: "external"},
+		Spec: infraApi.DatabaseProviderSpec{
+			Type: infraApi.ProviderTypeExternal,
+			External: &infraApi.ExternalProviderSpec{
+				Capabilities: []infraApi.ExternalCapability{
+					infraApi.ExternalCapabilityCreateSchema,
+				},
+			},
+		},
+	}
+	pg := &trackingClient{
+		cfg:                      providerConfig(),
+		databases:                map[string]bool{"analytics": true},
+		extensionAvailableByName: map[string]bool{"vector": true},
+	}
+
+	_, err := ensure(t, claim, provider, pg)
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(pg.execSQLsContainingCreateExtension("vector")).To(BeFalse())
+	g.Expect(pg.createdSchemas).To(ContainElement("myschema"))
+}
+
 func ensure(
 	t *testing.T,
 	claim *infraApi.SchemaClaim,
@@ -398,6 +507,7 @@ func ensure(
 				schemaOwners:               pg.schemaOwners,
 				roles:                      pg.roles,
 				forceCreateSchemaDuplicate: pg.forceCreateSchemaDuplicate,
+				extensionAvailableByName:   pg.extensionAvailableByName,
 				parent:                     pg,
 			}, nil
 		},
@@ -518,7 +628,31 @@ type trackingClient struct {
 	createdRoles               []string
 	grantedConnect             int
 	grantedDBCreate            int
+	extensionAvailableByName   map[string]bool
+	execSQLs                   []string
 	parent                     *trackingClient
+}
+
+func (t *trackingClient) execSQLsContainingCreateExtension(name string) bool {
+	root := t.root()
+	for _, stmt := range root.execSQLs {
+		upper := strings.ToUpper(stmt)
+		if strings.Contains(upper, "CREATE EXTENSION") && strings.Contains(stmt, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *trackingClient) countExecContaining(substr string) int {
+	root := t.root()
+	n := 0
+	for _, stmt := range root.execSQLs {
+		if strings.Contains(stmt, substr) {
+			n++
+		}
+	}
+	return n
 }
 
 func (t *trackingClient) root() *trackingClient {
@@ -536,6 +670,7 @@ func (t *trackingClient) Ping(context.Context) error {
 
 func (t *trackingClient) Exec(_ context.Context, query string, _ ...any) (pgconn.CommandTag, error) {
 	root := t.root()
+	root.execSQLs = append(root.execSQLs, query)
 	if root.databases == nil {
 		root.databases = map[string]bool{}
 	}
@@ -612,6 +747,22 @@ func (t *trackingClient) QueryRow(_ context.Context, query string, args ...any) 
 		return boolRow{root.roles[name]}, nil
 	case strings.Contains(query, "HAS_DATABASE_PRIVILEGE"), strings.Contains(query, "HAS_SCHEMA_PRIVILEGE"):
 		return boolRow{false}, nil
+	case strings.Contains(query, "pg_extension"):
+		if names, ok := args[0].([]string); ok {
+			var installed []string
+			for _, name := range names {
+				if root.extensionAvailableByName[name] {
+					installed = append(installed, name)
+				}
+			}
+			return namesRow{names: installed}, nil
+		}
+		name, _ := args[0].(string)
+		installed := false
+		if root.extensionAvailableByName != nil {
+			installed = root.extensionAvailableByName[name]
+		}
+		return boolRow{installed}, nil
 	default:
 		return boolRow{false}, nil
 	}
@@ -628,6 +779,17 @@ func (r boolRow) Scan(dest ...any) error {
 		return fmt.Errorf("expected *bool")
 	}
 	*ptr = r.v
+	return nil
+}
+
+type namesRow struct{ names []string }
+
+func (r namesRow) Scan(dest ...any) error {
+	ptr, ok := dest[0].(*[]string)
+	if !ok {
+		return fmt.Errorf("expected *[]string")
+	}
+	*ptr = append([]string(nil), r.names...)
 	return nil
 }
 

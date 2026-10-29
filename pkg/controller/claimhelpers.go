@@ -156,6 +156,40 @@ func ExternalProviderAllows(
 	return slices.Contains(provider.Spec.External.Capabilities, capability)
 }
 
+// EnsureClaimExtensions installs claim-required extensions on Internal
+// providers and verifies them against pg_extension in the connected database
+// on External (and any non-Internal) providers. External paths never issue
+// CREATE EXTENSION.
+func EnsureClaimExtensions(
+	ctx context.Context,
+	cli postgres.Client,
+	provider *infraApi.DatabaseProvider,
+	extensions []string,
+) error {
+	if len(extensions) == 0 {
+		return nil
+	}
+	if provider == nil {
+		return fmt.Errorf("provider is required for extension verification")
+	}
+
+	if provider.Spec.Type == infraApi.ProviderTypeInternal {
+		if err := postgres.CreateExtensionIfNotExists(ctx, cli, extensions); err != nil {
+			return fmt.Errorf("installing claim extensions: %w", err)
+		}
+		return nil
+	}
+
+	missing, err := postgres.MissingExtensions(ctx, cli, extensions)
+	if err != nil {
+		return fmt.Errorf("verifying claim extensions: %w", err)
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return claimerrors.ExtensionNotAvailable{Extensions: missing}
+}
+
 // WrapQuickRetry wraps err with an operation label and upgrades it to a
 // quick-retry signal when it's a connection-refused error. Extracted from the
 // identical wrapQuickRetry helpers in schemaclaim and databaseclaim.
