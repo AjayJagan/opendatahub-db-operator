@@ -32,6 +32,7 @@ import (
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 	odhtypes "github.com/opendatahub-io/odh-platform-utilities/framework/controller/types"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -203,6 +204,61 @@ func TestCleanupAction_DeletesCredentialsSecret(t *testing.T) {
 	err = cli.Get(context.Background(), client.ObjectKeyFromObject(credSecret), got)
 	g.Expect(err).To(HaveOccurred())
 	g.Expect(client.IgnoreNotFound(err)).To(Succeed())
+}
+
+func TestCleanupAction_DeletesStampedSecretWithStrippedOwnerRef(t *testing.T) {
+	g := NewWithT(t)
+	claim, provider, adminSecret := cleanupFixtures()
+	role := dbcontroller.RoleNameForSchemaClaim(claim.Namespace, claim.Name)
+	credSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      dbcontroller.SecretNameForSchemaClaim(claim),
+		Namespace: claim.Namespace,
+	}}
+	// No controller ownerRef: the credential stamp is the only proof this
+	// Secret is the claim's, and it must be enough for cleanup to delete it.
+	dbcontroller.ApplySchemaClaimCredentials(credSecret, postgres.Config{}, role, "pw", "analytics", "app_claim", claim.UID)
+	cli := fakeCleanupClient(t, provider, adminSecret, claim, credSecret)
+
+	err := newCleanupController(&cleanupPG{databases: map[string]bool{"analytics": true}}).cleanupAction(
+		context.Background(),
+		claimTestRequest(t, cli, claim),
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	got := &corev1.Secret{}
+	err = cli.Get(context.Background(), client.ObjectKeyFromObject(credSecret), got)
+	g.Expect(apierrors.IsNotFound(err)).To(BeTrue(),
+		"a stamp-verified ownerless Secret must be cleaned up, got: %v", err)
+}
+
+func TestCleanupAction_SkipsForeignOwnedSecretWithForgedStamp(t *testing.T) {
+	g := NewWithT(t)
+	claim, provider, adminSecret := cleanupFixtures()
+	role := dbcontroller.RoleNameForSchemaClaim(claim.Namespace, claim.Name)
+	controller := true
+	credSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{
+		Name:      dbcontroller.SecretNameForSchemaClaim(claim),
+		Namespace: claim.Namespace,
+		OwnerReferences: []metav1.OwnerReference{{
+			APIVersion: infraApi.GroupVersion.String(),
+			Kind:       infraApi.DatabaseClaimKind,
+			Name:       "sc-claim-a",
+			UID:        types.UID("databaseclaim-uid"),
+			Controller: &controller,
+		}},
+	}}
+	dbcontroller.ApplySchemaClaimCredentials(credSecret, postgres.Config{}, role, "forged-pw", "analytics", "app_claim", claim.UID)
+	cli := fakeCleanupClient(t, provider, adminSecret, claim, credSecret)
+
+	err := newCleanupController(&cleanupPG{databases: map[string]bool{"analytics": true}}).cleanupAction(
+		context.Background(),
+		claimTestRequest(t, cli, claim),
+	)
+	g.Expect(err).NotTo(HaveOccurred())
+
+	got := &corev1.Secret{}
+	g.Expect(cli.Get(context.Background(), client.ObjectKeyFromObject(credSecret), got)).To(Succeed(),
+		"a Secret owned by another controller must never be deleted, forged stamp or not")
 }
 
 func TestCleanupAction_SkipsCredentialsSecretOwnedByOtherClaim(t *testing.T) {

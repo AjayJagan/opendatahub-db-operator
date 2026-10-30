@@ -106,6 +106,8 @@ func New(
 
 	mgr, err := ctrl.NewManager(kubeConfig, ctrl.Options{
 		Scheme:        scheme,
+		Cache:         SecretScopedCache(),
+		NewClient:     NewClientWithUncachedSecrets,
 		WebhookServer: webhookServer,
 		Metrics: metricsserver.Options{
 			BindAddress:    cfg.Controller.Metrics.BindAddress,

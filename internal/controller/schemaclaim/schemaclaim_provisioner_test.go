@@ -142,6 +142,29 @@ func TestEnsure_RejectsCredentialsSecretOwnedByOther(t *testing.T) {
 	g.Expect(pg.createdRoles).To(BeEmpty())
 }
 
+func TestEnsure_RotatesTamperedPassword(t *testing.T) {
+	g := NewWithT(t)
+	claim := sampleClaim()
+	claim.UID = "schema-claim-uid"
+	role := dbcontroller.RoleNameForSchemaClaim(claim.Namespace, claim.Name)
+	pg := &trackingClient{
+		cfg:       providerConfig(),
+		databases: map[string]bool{"analytics": true},
+		roles:     map[string]bool{role: true},
+	}
+	secretName := dbcontroller.SecretNameForSchemaClaim(claim)
+	existing := credentialsSecretOwnedBy(t, secretName, claim.Namespace, claim)
+	dbcontroller.ApplySchemaClaimCredentials(existing, providerConfig(), role, "original-pw", "analytics", "app_claim", claim.UID)
+	existing.Data[postgres.SecretKeyPassword] = []byte("tampered-pw")
+
+	secret, err := ensure(t, claim, internalProvider(), pg, existing)
+
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(pg.execSQLsContainingPasswordSet()).To(Equal(1),
+		"a password that fails stamp verification must be rotated")
+	g.Expect(string(secret.Data[postgres.SecretKeyPassword])).NotTo(Equal("tampered-pw"))
+}
+
 func TestEnsure_RejectsPreexistingSchemaWithoutOwnerMarker(t *testing.T) {
 	g := NewWithT(t)
 	claim := sampleClaim()
@@ -631,6 +654,17 @@ type trackingClient struct {
 	extensionAvailableByName   map[string]bool
 	execSQLs                   []string
 	parent                     *trackingClient
+}
+
+func (t *trackingClient) execSQLsContainingPasswordSet() int {
+	root := t.root()
+	count := 0
+	for _, stmt := range root.execSQLs {
+		if strings.Contains(stmt, "PASSWORD") && strings.Contains(stmt, "ALTER ROLE") {
+			count++
+		}
+	}
+	return count
 }
 
 func (t *trackingClient) execSQLsContainingCreateExtension(name string) bool {

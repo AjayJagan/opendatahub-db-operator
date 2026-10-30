@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
@@ -28,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	infraApi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
@@ -99,6 +101,21 @@ func EffectiveProviderName(obj client.Object) string {
 		return specName
 	}
 	return statusName
+}
+
+// OwnerReferencesChanged enqueues on update events whose ownerReferences
+// differ. resources.Hash strips ownerReferences, so hash.Updated() is blind to
+// the controller owner of a Secret being removed or swapped (RHOAIENG-96275);
+// this predicate makes that drift reach the reconciler promptly.
+func OwnerReferencesChanged() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.TypedUpdateEvent[client.Object]) bool {
+			if e.ObjectOld == nil || e.ObjectNew == nil {
+				return false
+			}
+			return !apiequality.Semantic.DeepEqual(e.ObjectOld.GetOwnerReferences(), e.ObjectNew.GetOwnerReferences())
+		},
+	}
 }
 
 // ClaimWatchEventHandler enqueues the providers a claim event affects so

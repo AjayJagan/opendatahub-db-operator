@@ -84,7 +84,8 @@ func (p SchemaProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error) {
 	if err := p.Client.Get(ctx, client.ObjectKeyFromObject(secret), secret); client.IgnoreNotFound(err) != nil {
 		return nil, fmt.Errorf("checking credentials Secret existence: %w", err)
 	}
-	if err := dbcontroller.RejectForeignCredentialsSecret(secret, p.Claim.UID); err != nil {
+	role := dbcontroller.RoleNameForSchemaClaim(p.Claim.Namespace, p.Claim.Name)
+	if err := dbcontroller.RejectForeignCredentialsSecret(secret, p.Claim.UID, role); err != nil {
 		return nil, err
 	}
 
@@ -105,7 +106,6 @@ func (p SchemaProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error) {
 		return nil, err
 	}
 
-	role := dbcontroller.RoleNameForSchemaClaim(p.Claim.Namespace, p.Claim.Name)
 	roleExists, err := postgres.RoleExists(ctx, p.Postgres, role)
 	if err != nil {
 		return nil, dbcontroller.WrapQuickRetry("checking role existence", err)
@@ -132,7 +132,7 @@ func (p SchemaProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error) {
 		if err := postgres.SetRolePassword(ctx, p.Postgres, role, pw); err != nil {
 			return nil, dbcontroller.WrapQuickRetry("setting role password", err)
 		}
-		dbcontroller.ApplySchemaClaimCredentials(secret, p.ProviderConfig, role, pw, database, schema)
+		dbcontroller.ApplySchemaClaimCredentials(secret, p.ProviderConfig, role, pw, database, schema, p.Claim.UID)
 
 	case !secretExists:
 		pw, err := postgres.GeneratePassword(24)
@@ -142,11 +142,15 @@ func (p SchemaProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error) {
 		if err := postgres.SetRolePassword(ctx, p.Postgres, role, pw); err != nil {
 			return nil, dbcontroller.WrapQuickRetry("rotating role password", err)
 		}
-		dbcontroller.ApplySchemaClaimCredentials(secret, p.ProviderConfig, role, pw, database, schema)
+		dbcontroller.ApplySchemaClaimCredentials(secret, p.ProviderConfig, role, pw, database, schema, p.Claim.UID)
 
 	default:
+		// Keep a verifiable password; rotate anything else. The stamp rules
+		// and the upgrade-migration trade-off are documented in
+		// DatabaseProvisioner.Ensure.
 		existingPassword := string(secret.Data[postgres.SecretKeyPassword])
-		if existingPassword == "" {
+		if existingPassword == "" || (dbcontroller.HasCredentialStamp(secret) &&
+			!dbcontroller.CredentialStampMatches(secret, p.Claim.UID, role)) {
 			pw, genErr := postgres.GeneratePassword(24)
 			if genErr != nil {
 				return nil, fmt.Errorf("generating password: %w", genErr)
@@ -156,7 +160,7 @@ func (p SchemaProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error) {
 			}
 			existingPassword = pw
 		}
-		dbcontroller.ApplySchemaClaimCredentials(secret, p.ProviderConfig, role, existingPassword, database, schema)
+		dbcontroller.ApplySchemaClaimCredentials(secret, p.ProviderConfig, role, existingPassword, database, schema, p.Claim.UID)
 	}
 
 	// CONNECT on the database so the role can open a session; schema grants

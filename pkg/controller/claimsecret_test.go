@@ -35,8 +35,10 @@ func TestApplyClaimCredentials_ADRContract(t *testing.T) {
 		Port:        5432,
 		SSLMode:     "",
 		SSLRootCert: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----",
-	}, "claim_role", "Abc123xyz", "analytics")
+	}, "claim_role", "Abc123xyz", "analytics", "claim-uid")
 
+	g.Expect(secret.Annotations[controller.CredentialStampAnnotation]).NotTo(BeEmpty(),
+		"the credential stamp must be recorded for later tamper verification")
 	g.Expect(secret.Annotations[postgres.AnnotationConnectionTypeProtocol]).
 		To(Equal(postgres.ConnectionTypeProtocolPostgres))
 	g.Expect(secret.Type).To(Equal(corev1.SecretTypeOpaque))
@@ -58,7 +60,7 @@ func TestApplySchemaClaimCredentials_AddsSchemaKey(t *testing.T) {
 	controller.ApplySchemaClaimCredentials(secret, postgres.Config{
 		Host: "db.example.svc",
 		Port: 5432,
-	}, "claim_role", "Abc123xyz", "analytics", "app_claim")
+	}, "claim_role", "Abc123xyz", "analytics", "app_claim", "claim-uid")
 
 	g.Expect(string(secret.Data[postgres.SecretKeySchema])).To(Equal("app_claim"))
 	g.Expect(string(secret.Data[postgres.SecretKeyDatabase])).To(Equal("analytics"))

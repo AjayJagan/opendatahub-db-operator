@@ -64,13 +64,16 @@ func (e ErrConnectionSecretInvalid) Error() string {
 }
 func (e ErrConnectionSecretInvalid) Unwrap() error { return e.Cause }
 
-func loadExternalConfig(ctx context.Context, cli client.Client, provider *infraApi.DatabaseProvider) (postgres.Config, error) {
+// loadExternalConfig must receive the manager's API reader: administrator
+// Secrets carry no operator label and never enter the label-scoped cache
+// (RHOAIENG-96275).
+func loadExternalConfig(ctx context.Context, reader client.Reader, provider *infraApi.DatabaseProvider) (postgres.Config, error) {
 	if provider.Spec.External == nil {
 		return postgres.Config{}, ErrConnectionSecretInvalid{Name: provider.Name, Cause: fmt.Errorf("spec.external is required for External providers")}
 	}
 	ref := provider.Spec.External.ConnectionSecretRef
 	secret := &corev1.Secret{}
-	if err := cli.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, secret); err != nil {
+	if err := reader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, secret); err != nil {
 		return postgres.Config{}, ErrConnectionSecretUnavailable{Ref: ref, Cause: err}
 	}
 	cfg, err := postgres.ParseAdminSecret(secret.Data)

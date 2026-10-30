@@ -21,8 +21,11 @@ import (
 	"testing"
 
 	. "github.com/onsi/gomega"
+	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/predicates/hash"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -218,6 +221,90 @@ func TestClaimWatchEventHandler(t *testing.T) {
 		}, q)
 		g.Expect(drain(q)).To(ConsistOf(requestFor("internal-a"), requestFor("internal-b")))
 	})
+}
+
+// TestSecretDriftPredicate pins the predicate the claim controllers use for
+// Owns(&Secret): hash.Updated() must pass content changes and filter
+// resourceVersion-only bumps. Secrets never increment metadata.generation, so
+// the framework's default (generation-based) predicate would pass every
+// update; a regression to it makes this test fail.
+
+// TestOwnerReferencesChangedPredicate pins the second Owns(Secret) predicate:
+// ownerReference changes must enqueue (resources.Hash strips them, so
+// hash.Updated() is blind to the controller owner being removed or swapped).
+func ptrTrue() *bool {
+	v := true
+	return &v
+}
+
+func TestOwnerReferencesChangedPredicate(t *testing.T) {
+	g := NewWithT(t)
+	pred := controller.OwnerReferencesChanged()
+
+	owner := func(uid string) []metav1.OwnerReference {
+		return []metav1.OwnerReference{{Kind: "DatabaseClaim", Name: "c", UID: types.UID(uid), Controller: ptrTrue()}}
+	}
+	secret := func(uid string, rv string) *corev1.Secret {
+		return &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            "creds",
+				Namespace:       "app",
+				OwnerReferences: owner(uid),
+				ResourceVersion: rv,
+			},
+		}
+	}
+
+	g.Expect(pred.Update(event.TypedUpdateEvent[client.Object]{
+		ObjectOld: secret("claim-uid", "1"),
+		ObjectNew: secret("claim-uid", "2"),
+	})).To(BeFalse(), "resourceVersion-only change must not enqueue")
+
+	g.Expect(pred.Update(event.TypedUpdateEvent[client.Object]{
+		ObjectOld: secret("claim-uid", "1"),
+		ObjectNew: secret("other-uid", "2"),
+	})).To(BeTrue(), "a swapped controller owner must enqueue")
+
+	g.Expect(pred.Update(event.TypedUpdateEvent[client.Object]{
+		ObjectOld: secret("claim-uid", "1"),
+		ObjectNew: func() *corev1.Secret {
+			s := secret("claim-uid", "2")
+			s.OwnerReferences = nil
+			return s
+		}(),
+	})).To(BeTrue(), "a removed controller owner must enqueue")
+}
+
+func TestSecretDriftPredicate(t *testing.T) {
+	g := NewWithT(t)
+	pred := hash.Updated()
+
+	secret := func(password, resourceVersion string) *corev1.Secret {
+		return &corev1.Secret{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            "creds",
+				Namespace:       "app",
+				ResourceVersion: resourceVersion,
+			},
+			Data: map[string][]byte{"password": []byte(password)},
+		}
+	}
+
+	g.Expect(pred.Create(event.TypedCreateEvent[client.Object]{Object: secret("pw", "1")})).To(BeTrue(),
+		"secret creation must enqueue")
+
+	g.Expect(pred.Delete(event.TypedDeleteEvent[client.Object]{Object: secret("pw", "1")})).To(BeTrue(),
+		"secret deletion must enqueue")
+
+	g.Expect(pred.Update(event.TypedUpdateEvent[client.Object]{
+		ObjectOld: secret("pw", "1"),
+		ObjectNew: secret("changed", "2"),
+	})).To(BeTrue(), "a password change must enqueue")
+
+	g.Expect(pred.Update(event.TypedUpdateEvent[client.Object]{
+		ObjectOld: secret("pw", "1"),
+		ObjectNew: secret("pw", "2"),
+	})).To(BeFalse(), "a resourceVersion-only bump must not enqueue")
 }
 
 func TestEffectiveProviderName(t *testing.T) {

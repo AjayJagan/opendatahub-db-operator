@@ -59,17 +59,21 @@ func ProviderDefaultDatabase(provider *infraApi.DatabaseProvider) string {
 	return ""
 }
 
+// LoadProviderConfig resolves the admin connection configuration for a
+// provider. Secret reads bypass the informer cache through the manager
+// client's Cache.DisableFor (RHOAIENG-96275), so administrator Secrets that
+// carry no operator label are served fresh by any client.
 func LoadProviderConfig(
 	ctx context.Context,
-	cli client.Client,
+	reader client.Reader,
 	provider *infraApi.DatabaseProvider,
 	operatorNamespace string,
 ) (postgres.Config, error) {
 	switch provider.Spec.Type {
 	case infraApi.ProviderTypeExternal:
-		return loadExternalProviderConfig(ctx, cli, provider)
+		return loadExternalProviderConfig(ctx, reader, provider)
 	case infraApi.ProviderTypeInternal:
-		return loadInternalProviderConfig(ctx, cli, provider, operatorNamespace)
+		return loadInternalProviderConfig(ctx, reader, provider, operatorNamespace)
 	default:
 		return postgres.Config{}, fmt.Errorf("unsupported provider type %q", provider.Spec.Type)
 	}
@@ -77,7 +81,7 @@ func LoadProviderConfig(
 
 func loadExternalProviderConfig(
 	ctx context.Context,
-	cli client.Client,
+	reader client.Reader,
 	provider *infraApi.DatabaseProvider,
 ) (postgres.Config, error) {
 	switch ref := provider.Spec.External; {
@@ -86,7 +90,7 @@ func loadExternalProviderConfig(
 	case ref.ConnectionSecretRef.Namespace == "":
 		return postgres.Config{}, fmt.Errorf("spec.external.connectionSecretRef.namespace is required for External providers")
 	default:
-		secret, err := readSecretRef(ctx, cli, ref.ConnectionSecretRef)
+		secret, err := readSecretRef(ctx, reader, ref.ConnectionSecretRef)
 		if err != nil {
 			return postgres.Config{}, err
 		}
@@ -114,7 +118,7 @@ func loadExternalProviderConfig(
 
 func loadInternalProviderConfig(
 	ctx context.Context,
-	cli client.Client,
+	reader client.Reader,
 	provider *infraApi.DatabaseProvider,
 	operatorNamespace string,
 ) (postgres.Config, error) {
@@ -123,7 +127,7 @@ func loadInternalProviderConfig(
 		Name:      InternalAdminSecretName(provider.Name),
 	}
 
-	secret, err := readSecretRef(ctx, cli, ref)
+	secret, err := readSecretRef(ctx, reader, ref)
 	if err != nil {
 		return postgres.Config{}, err
 	}
@@ -147,13 +151,18 @@ func loadInternalProviderConfig(
 	return cfg, nil
 }
 
+// readSecretRef relies on Secret reads bypassing the informer cache via the
+// manager client's Cache.DisableFor (RHOAIENG-96275): administrator Secrets
+// and pre-existing operator Secrets carry no selector match in the
+// label-scoped informer, and a cached read from that informer would return
+// NotFound for a Secret that exists.
 func readSecretRef(
 	ctx context.Context,
-	cli client.Client,
+	reader client.Reader,
 	ref corev1.SecretReference,
 ) (*corev1.Secret, error) {
 	secret := &corev1.Secret{}
-	err := cli.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, secret)
+	err := reader.Get(ctx, client.ObjectKey{Namespace: ref.Namespace, Name: ref.Name}, secret)
 	switch {
 	case err == nil:
 		return secret, nil

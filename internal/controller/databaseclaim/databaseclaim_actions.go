@@ -138,6 +138,10 @@ func (m *Controller) provisionAction(ctx context.Context, rr *odhtypes.Reconcili
 		rr.Conditions.Mark(ConditionProvisioned, metav1.ConditionFalse,
 			conditions.WithReason("SecretNotOwned"),
 			conditions.WithMessage(secretNotOwned.Error()))
+		// Terminal policy denial: no polite requeue. Recovery happens on
+		// the next periodic reconcile once the colliding Secret is removed —
+		// the Owns(Secret) watch maps deletions to the Secret's controller
+		// owner, not to this claim.
 		return odherrors.NewStopErrorW(secretNotOwned)
 	}
 	if missingExt, ok := errors.AsType[claimerrors.ExtensionNotAvailable](err); ok {
@@ -153,9 +157,10 @@ func (m *Controller) provisionAction(ctx context.Context, rr *odhtypes.Reconcili
 		return err
 	}
 
-	// Owns(Secret) is deferred (scoped cache); set the controller ownerRef so
-	// GC removes the Secret after the claim is deleted, and so AC checks that
-	// expect an owner reference to the claim succeed.
+	// The controller ownerRef routes Owns(Secret) drift events to this claim
+	// and lets GC collect the Secret after claim deletion. Foreign Secrets
+	// colliding on the name are rejected earlier in the provisioner, via
+	// RejectForeignCredentialsSecret.
 	if err := controllerutil.SetControllerReference(obj, secret, rr.Client.Scheme()); err != nil {
 		return fmt.Errorf("setting credentials Secret owner reference: %w", err)
 	}
@@ -306,10 +311,13 @@ func deleteClaimCredentialsSecret(ctx context.Context, cli client.Client, claim 
 	}
 
 	// Name alone is not enough: SchemaClaim "foo" and DatabaseClaim "sc-foo"
-	// both default to Secret "sc-foo". Delete only when this claim is the
-	// controller owner (including when the claim never provisioned).
-	owner := metav1.GetControllerOf(secret)
-	if owner == nil || owner.UID != claim.UID {
+	// both default to Secret "sc-foo". Delete only when this claim owns the
+	// Secret, or — when the ownerRef was stripped — when the credential stamp
+	// still proves the content is this claim's. RejectForeignCredentialsSecret
+	// shares the ownership rule with provisioning, so a Secret owned by
+	// another controller is never deleted here, forged stamp or not.
+	role := dbcontroller.RoleNameFor(claim.Namespace, claim.Name)
+	if dbcontroller.RejectForeignCredentialsSecret(secret, claim.UID, role) != nil {
 		return nil
 	}
 

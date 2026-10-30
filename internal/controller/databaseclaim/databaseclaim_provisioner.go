@@ -77,7 +77,7 @@ func (p DatabaseProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error)
 		p.Claim.Status.DatabaseCreated = true
 	}
 
-	// Reject a colliding credentials Secret before role/extension work.
+	// Reject a foreign credentials Secret before role/extension work.
 	// SchemaClaim "foo" and DatabaseClaim "sc-foo" both default to Secret "sc-foo".
 	secret := &corev1.Secret{}
 	secret.Name = dbcontroller.SecretNameForDatabaseClaim(p.Claim)
@@ -85,7 +85,8 @@ func (p DatabaseProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error)
 	if err := p.Client.Get(ctx, client.ObjectKeyFromObject(secret), secret); client.IgnoreNotFound(err) != nil {
 		return nil, fmt.Errorf("checking credentials Secret existence: %w", err)
 	}
-	if err := dbcontroller.RejectForeignCredentialsSecret(secret, p.Claim.UID); err != nil {
+	role := dbcontroller.RoleNameFor(p.Claim.Namespace, p.Claim.Name)
+	if err := dbcontroller.RejectForeignCredentialsSecret(secret, p.Claim.UID, role); err != nil {
 		return nil, err
 	}
 
@@ -105,7 +106,6 @@ func (p DatabaseProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error)
 		}
 	}
 
-	role := dbcontroller.RoleNameFor(p.Claim.Namespace, p.Claim.Name)
 	roleExists, err := postgres.RoleExists(ctx, p.Postgres, role)
 	if err != nil {
 		return nil, dbcontroller.WrapQuickRetry("checking role existence", err)
@@ -132,7 +132,7 @@ func (p DatabaseProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error)
 		if err := postgres.SetRolePassword(ctx, p.Postgres, role, pw); err != nil {
 			return nil, dbcontroller.WrapQuickRetry("setting role password", err)
 		}
-		dbcontroller.ApplyClaimCredentials(secret, p.ProviderConfig, role, pw, database)
+		dbcontroller.ApplyClaimCredentials(secret, p.ProviderConfig, role, pw, database, p.Claim.UID)
 
 	case !secretExists:
 		// Secret lost while role remains: rotate so Secret and role stay in sync.
@@ -143,12 +143,23 @@ func (p DatabaseProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error)
 		if err := postgres.SetRolePassword(ctx, p.Postgres, role, pw); err != nil {
 			return nil, dbcontroller.WrapQuickRetry("rotating role password", err)
 		}
-		dbcontroller.ApplyClaimCredentials(secret, p.ProviderConfig, role, pw, database)
+		dbcontroller.ApplyClaimCredentials(secret, p.ProviderConfig, role, pw, database, p.Claim.UID)
 
 	default:
-		// Keep existing password; refresh non-secret connection fields + annotation.
+		// Keep a verifiable password; rotate anything else: an empty
+		// password cannot be recovered, and a stamp mismatch means the
+		// stored content is no longer what this claim provisioned. An owned
+		// Secret with no stamp is the upgrade-migration case, deliberately
+		// preserved and stamped rather than rotated so upgrades do not churn
+		// every claim's credentials; the accepted trade-off is that a Secret
+		// recreated without annotations (e.g. a GitOps restore of a
+		// pre-rotation version) also takes this path and keeps a stale
+		// password — deleting the Secret heals that by rotation. The stamp
+		// checks Secret-content consistency only; it cannot detect the
+		// role's password changing out-of-band in PostgreSQL.
 		existingPassword := string(secret.Data[postgres.SecretKeyPassword])
-		if existingPassword == "" {
+		if existingPassword == "" || (dbcontroller.HasCredentialStamp(secret) &&
+			!dbcontroller.CredentialStampMatches(secret, p.Claim.UID, role)) {
 			pw, genErr := postgres.GeneratePassword(24)
 			if genErr != nil {
 				return nil, fmt.Errorf("generating password: %w", genErr)
@@ -158,7 +169,7 @@ func (p DatabaseProvisioner) Ensure(ctx context.Context) (*corev1.Secret, error)
 			}
 			existingPassword = pw
 		}
-		dbcontroller.ApplyClaimCredentials(secret, p.ProviderConfig, role, existingPassword, database)
+		dbcontroller.ApplyClaimCredentials(secret, p.ProviderConfig, role, existingPassword, database, p.Claim.UID)
 	}
 
 	switch ok, err := postgres.HasDatabasePrivileges(ctx, p.Postgres, database, role, access); {

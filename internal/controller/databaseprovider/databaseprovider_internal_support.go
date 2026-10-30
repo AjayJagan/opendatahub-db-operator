@@ -249,9 +249,12 @@ func internalTLSStatus(
 	}
 }
 
+// internalTLSSecret relies on Secret reads bypassing the informer cache via
+// the manager client's Cache.DisableFor (RHOAIENG-96275): the TLS Secret is
+// issued by cert-manager and carries no operator label.
 func internalTLSSecret(
 	ctx context.Context,
-	cli client.Client,
+	reader client.Reader,
 	provider *infraApi.DatabaseProvider,
 	cfg *moduleconfig.Config,
 ) (*corev1.Secret, error) {
@@ -265,7 +268,7 @@ func internalTLSSecret(
 			Namespace: dbcontroller.InternalNamespace(provider, cfg.OperatorNamespace),
 		},
 	}
-	if err := cli.Get(ctx, client.ObjectKeyFromObject(secret), secret); err != nil {
+	if err := reader.Get(ctx, client.ObjectKeyFromObject(secret), secret); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil, nil
 		}
@@ -307,7 +310,7 @@ func internalTLSSecretHash(secret *corev1.Secret) string {
 
 func resolveInternalTLSState(
 	ctx context.Context,
-	cli client.Client,
+	reader client.Reader,
 	provider *infraApi.DatabaseProvider,
 	cfg *moduleconfig.Config,
 ) (TLSState, error) {
@@ -318,7 +321,7 @@ func resolveInternalTLSState(
 		return state, nil
 	}
 
-	secret, err := internalTLSSecret(ctx, cli, provider, cfg)
+	secret, err := internalTLSSecret(ctx, reader, provider, cfg)
 	if err != nil {
 		return state, err
 	}
@@ -340,14 +343,18 @@ func resolveInternalTLSState(
 // provider, including the desired admin Secret projection. If the admin Secret
 // already exists its password is preserved; otherwise fresh credentials are
 // generated. The caller adds TLSState.AdminSecret to rr.Resources so the deploy
-// action creates or updates it via SSA.
+// action creates or updates it via SSA. Secret reads bypass the informer cache
+// via the manager client's Cache.DisableFor, so a pre-existing admin Secret
+// from before the managed label existed is served fresh; the PVC existence
+// check reads through the cache, which is safe because the guard only matters
+// once the instance has aged past informer sync.
 func computeInternalAdminSecret(
 	ctx context.Context,
-	cli client.Client,
+	reader client.Reader,
 	provider *infraApi.DatabaseProvider,
 	cfg *moduleconfig.Config,
 ) (TLSState, error) {
-	res, err := resolveInternalTLSState(ctx, cli, provider, cfg)
+	res, err := resolveInternalTLSState(ctx, reader, provider, cfg)
 	if err != nil {
 		return res, err
 	}
@@ -356,7 +363,7 @@ func computeInternalAdminSecret(
 	existing.Name = dbcontroller.InternalAdminSecretName(provider.Name)
 	existing.Namespace = dbcontroller.InternalNamespace(provider, cfg.OperatorNamespace)
 
-	err = cli.Get(ctx, client.ObjectKeyFromObject(existing), existing)
+	err = reader.Get(ctx, client.ObjectKeyFromObject(existing), existing)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return res, err
 	}
@@ -366,7 +373,7 @@ func computeInternalAdminSecret(
 		pvc := &corev1.PersistentVolumeClaim{}
 		pvc.Name = dbcontroller.InternalPVCName(provider.Name)
 		pvc.Namespace = existing.Namespace
-		if err := cli.Get(ctx, client.ObjectKeyFromObject(pvc), pvc); err == nil {
+		if err := reader.Get(ctx, client.ObjectKeyFromObject(pvc), pvc); err == nil {
 			return res, fmt.Errorf(
 				"%w: restore Secret %s/%s with its original password, "+
 					"or reset the database admin password before recreating the Secret",
