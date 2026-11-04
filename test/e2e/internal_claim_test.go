@@ -23,6 +23,7 @@ import (
 	"time"
 
 	. "github.com/onsi/gomega"
+	fwapi "github.com/opendatahub-io/odh-platform-utilities/framework/api"
 	"github.com/opendatahub-io/odh-platform-utilities/framework/controller/conditions"
 	infraapi "github.com/opendatahub-io/opendatahub-db-operator/api/infrastructure/v1alpha1"
 	dbcontroller "github.com/opendatahub-io/opendatahub-db-operator/pkg/controller"
@@ -97,7 +98,7 @@ func TestInternalProviderClaimLifecycle(t *testing.T) {
 		limit := conditions.FindStatusCondition(current, infraapi.ConditionOperationalLimitations)
 		g.Expect(limit).NotTo(BeNil())
 		g.Expect(limit.Status).To(Equal(metav1.ConditionTrue))
-		g.Expect(limit.Severity).To(Equal("Info"))
+		g.Expect(limit.Severity).To(Equal(fwapi.ConditionSeverityInfo))
 		ready := conditions.FindStatusCondition(current, "Ready")
 		g.Expect(ready).NotTo(BeNil())
 		g.Expect(ready.Status).To(Equal(metav1.ConditionTrue))
