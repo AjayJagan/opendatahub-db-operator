@@ -73,6 +73,15 @@ func TestLoad_RelatedPostgresImage(t *testing.T) {
 	g.Expect(cfg.PostgresImage).To(Equal("mirror.example.test/postgresql-16@sha256:abc123"))
 }
 
+func TestLoad_WhitespaceRelatedPostgresImageUsesDefault(t *testing.T) {
+	t.Setenv("RELATED_IMAGE_POSTGRESQL_16_IMAGE", " \t\n ")
+	g := NewWithT(t)
+
+	cfg, err := config.Load()
+	g.Expect(err).NotTo(HaveOccurred())
+	g.Expect(cfg.PostgresImage).To(Equal(config.DefaultInternalPostgresImage))
+}
+
 func TestLoad_ConfiguredPostgresImageOverridesRelatedImage(t *testing.T) {
 	t.Setenv("RELATED_IMAGE_POSTGRESQL_16_IMAGE", "mirror.example.test/postgresql-16@sha256:abc123")
 	g := NewWithT(t)

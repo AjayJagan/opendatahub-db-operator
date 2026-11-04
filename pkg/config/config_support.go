@@ -64,7 +64,7 @@ func setDefaults(v *viper.Viper) {
 }
 
 func defaultPostgresImage() string {
-	if image := os.Getenv("RELATED_IMAGE_POSTGRESQL_16_IMAGE"); image != "" {
+	if image := strings.TrimSpace(os.Getenv("RELATED_IMAGE_POSTGRESQL_16_IMAGE")); image != "" {
 		return image
 	}
 	return DefaultInternalPostgresImage
