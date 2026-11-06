@@ -29,6 +29,7 @@ import (
 )
 
 func TestLoad_Defaults(t *testing.T) {
+	t.Setenv("RELATED_IMAGE_POSTGRESQL_16_IMAGE", "")
 	g := NewWithT(t)
 
 	cfg, err := config.Load()
@@ -125,6 +126,7 @@ func TestLoad_WebhookDefaults(t *testing.T) {
 }
 
 func TestLoad_EmptyPostgresImageFallsBackToDefault(t *testing.T) {
+	t.Setenv("RELATED_IMAGE_POSTGRESQL_16_IMAGE", "")
 	g := NewWithT(t)
 
 	cfg, err := config.Load(config.WithFS(fstest.MapFS{
