@@ -18,6 +18,8 @@ provider available](installation-and-usage.md).
 | `SchemaClaim` | The component can keep its tables in a dedicated schema within a provider database. | A role with access to that schema and a Secret containing its name. |
 | `DatabaseClaim` | The component needs a database-scoped role or a dedicated database. | A role with access to the selected database. A named database can be created only when the provider permits it. |
 
+Both claims accept `spec.extensions`; the day-one allow-list is `vector`, and the list is immutable after creation.
+
 For high availability or backups, choose an External provider backed by a database
 that meets those requirements. The default Internal provider has neither automated
 backup and restore nor high availability. An administrator configures the External
