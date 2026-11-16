@@ -138,8 +138,17 @@ its connection pool, or restart its Pods to read the new credentials. Values
 loaded into environment variables at Pod creation do not update in that Pod.
 The operator does not provide scheduled or user-triggered credential rotation.
 
-Deleting a claim removes its role and Secret. Its underlying data is retained
-by default; set `spec.deletionPolicy: Delete` only when the component intends
-the operator to delete its eligible schema or named database. A shared provider
-default database is never deleted with a claim. Plan any migration of existing
-component data separately from claim creation or deletion.
+Keep the claim's bound `DatabaseProvider` available until the claim is deleted.
+Then the operator can remove the PostgreSQL role and credentials Secret. If the
+provider is missing, cleanup removes the Secret but cannot revoke or drop the
+role; previously issued credentials may remain valid while PostgreSQL is
+reachable. An administrator must revoke or drop that orphaned role in PostgreSQL.
+
+Claim data is retained by default. Set `spec.deletionPolicy: Delete` only when
+the component intends the operator to delete its eligible schema or named
+database. A shared provider default database is never deleted with a claim.
+A retained schema keeps the deleted claim's UID as its ownership marker. With
+default schema naming, recreating a `SchemaClaim` with the same name selects
+that schema but is rejected because the new claim has a different UID. Arrange
+administrator-assisted recovery or migration of retained data before recreating
+the claim.
