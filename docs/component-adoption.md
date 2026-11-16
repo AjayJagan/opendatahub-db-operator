@@ -143,8 +143,11 @@ The operator does not provide scheduled or user-triggered credential rotation.
 Keep the claim's bound `DatabaseProvider` available until the claim is deleted.
 Then the operator can remove the PostgreSQL role and credentials Secret. If the
 provider is missing, cleanup removes the Secret but cannot revoke or drop the
-role; previously issued credentials may remain valid while PostgreSQL is
-reachable. An administrator must revoke or drop that orphaned role in PostgreSQL.
+role or delete claim data, even with `deletionPolicy: Delete`. Previously issued
+credentials and active sessions may retain access while PostgreSQL is reachable.
+An administrator must disable login, terminate active sessions, and drop the
+orphaned role; if `Delete` was requested, also remove the eligible schema or
+named database.
 
 Claim data is retained by default. Set `spec.deletionPolicy: Delete` only when
 the component intends the operator to delete its eligible schema or named
