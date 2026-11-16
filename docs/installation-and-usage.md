@@ -142,6 +142,8 @@ oc get secret app-db -n my-app
 
 The Secret contains discrete PostgreSQL connection fields. See the [credential contract](../ARCHITECTURE.md#credential-contract)
 for field names and TLS behavior.
+For a runnable component example using a `SchemaClaim`, migrations, and handling
+credential changes, see [Adopt the database service in a component](component-adoption.md).
 
 To use another provider, set `spec.provider.name` or `spec.provider.selector` on the claim.
 The same selection applies to `SchemaClaim`. Remove every DatabaseClaim and SchemaClaim —
